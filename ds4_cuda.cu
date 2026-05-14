@@ -156,6 +156,10 @@ static int g_model_load_progress_started;
 static int g_model_load_progress_tty;
 static void *g_cuda_tmp[64];
 static uint64_t g_cuda_tmp_bytes[64];
+static float *g_output_split_x[64];
+static uint64_t g_output_split_x_bytes[64];
+static float *g_output_split_out[64];
+static uint64_t g_output_split_out_bytes[64];
 static void *g_model_stage_raw[4];
 static void *g_model_stage[4];
 static cudaEvent_t g_model_stage_event[4];
@@ -201,6 +205,27 @@ static void *cuda_tmp_alloc(uint64_t bytes, const char *what) {
     g_cuda_tmp[cache_dev] = ptr;
     g_cuda_tmp_bytes[cache_dev] = bytes;
     return g_cuda_tmp[cache_dev];
+}
+
+static void *cuda_device_buffer_alloc(float **ptr, uint64_t *have_bytes, uint64_t bytes, const char *what) {
+    if (bytes == 0) return NULL;
+    if (*have_bytes >= bytes && *ptr) return *ptr;
+    if (*ptr) {
+        (void)cudaFree(*ptr);
+        *ptr = NULL;
+        *have_bytes = 0;
+    }
+    void *p = NULL;
+    cudaError_t err = cudaMalloc(&p, (size_t)bytes);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "ds4: CUDA temp alloc failed for %s (%.2f MiB): %s\n",
+                what ? what : "scratch", (double)bytes / 1048576.0, cudaGetErrorString(err));
+        (void)cudaGetLastError();
+        return NULL;
+    }
+    *ptr = (float *)p;
+    *have_bytes = bytes;
+    return p;
 }
 
 static int cuda_attention_score_buffer_fits(uint32_t n_comp) {
@@ -1566,6 +1591,18 @@ extern "C" void ds4_gpu_cleanup(void) {
             (void)cudaFree(g_cuda_tmp[i]);
             g_cuda_tmp[i] = NULL;
             g_cuda_tmp_bytes[i] = 0;
+        }
+        if (g_output_split_x[i]) {
+            (void)cudaSetDevice((int)i);
+            (void)cudaFree(g_output_split_x[i]);
+            g_output_split_x[i] = NULL;
+            g_output_split_x_bytes[i] = 0;
+        }
+        if (g_output_split_out[i]) {
+            (void)cudaSetDevice((int)i);
+            (void)cudaFree(g_output_split_out[i]);
+            g_output_split_out[i] = NULL;
+            g_output_split_out_bytes[i] = 0;
         }
     }
     if (saved_dev >= 0) (void)cudaSetDevice(saved_dev);
@@ -6162,6 +6199,115 @@ static int cuda_matmul_q8_0_tensor_labeled(ds4_gpu_tensor *out, const void *mode
 extern "C" int ds4_gpu_matmul_q8_0_tensor(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size, uint64_t weight_offset, uint64_t in_dim, uint64_t out_dim, const ds4_gpu_tensor *x, uint64_t n_tok) {
     return cuda_matmul_q8_0_tensor_labeled(out, model_map, model_size, weight_offset,
                                            in_dim, out_dim, x, n_tok, "q8_0");
+}
+
+extern "C" int ds4_gpu_matmul_q8_0_split_output_tensor(
+        ds4_gpu_tensor *out,
+        const void *model_map,
+        uint64_t model_size,
+        uint64_t weight_offset,
+        uint64_t in_dim,
+        uint64_t out_dim,
+        const ds4_gpu_tensor *x) {
+    if (!out || !x || !model_map) return 0;
+    if (g_split_count <= 1 || getenv("DS4_CUDA_SPLIT_OUTPUT_HEAD") == NULL) {
+        return cuda_matmul_q8_0_tensor_labeled(out, model_map, model_size, weight_offset,
+                                               in_dim, out_dim, x, 1, "output");
+    }
+
+    const uint64_t blocks = (in_dim + 31u) / 32u;
+    if (blocks == 0 || blocks > UINT64_MAX / 34u) return 0;
+    const uint64_t row_bytes = blocks * 34u;
+    if (out_dim > UINT64_MAX / row_bytes || weight_offset > model_size) return 0;
+    const uint64_t weight_bytes = out_dim * row_bytes;
+    if (weight_bytes > model_size - weight_offset) return 0;
+    if (x->bytes < in_dim * sizeof(float) || out->bytes < out_dim * sizeof(float)) return 0;
+
+    int devices[64];
+    int ndev = 0;
+    for (int i = 0; i < g_split_count; i++) {
+        const int dev = g_split_devices[i];
+        int seen = 0;
+        for (int j = 0; j < ndev; j++) {
+            if (devices[j] == dev) {
+                seen = 1;
+                break;
+            }
+        }
+        if (!seen && dev >= 0 && dev < (int)(sizeof(devices) / sizeof(devices[0]))) {
+            devices[ndev++] = dev;
+        }
+    }
+    if (ndev <= 1) {
+        return cuda_matmul_q8_0_tensor_labeled(out, model_map, model_size, weight_offset,
+                                               in_dim, out_dim, x, 1, "output");
+    }
+
+    const int primary = out->device >= 0 ? out->device : g_primary_device;
+    if (!cuda_ok(cudaSetDevice(primary), "split output set primary")) return 0;
+    g_active_device = primary;
+    if (!cuda_ok(cudaDeviceSynchronize(), "split output primary synchronize")) return 0;
+
+    const uint64_t x_bytes = in_dim * sizeof(float);
+    for (int i = 0; i < ndev; i++) {
+        const int dev = devices[i];
+        uint64_t start = (out_dim * (uint64_t)i) / (uint64_t)ndev;
+        uint64_t end = (out_dim * (uint64_t)(i + 1)) / (uint64_t)ndev;
+        if (i > 0) start = (start + 7u) & ~7ull;
+        if (i + 1 < ndev) end &= ~7ull;
+        if (end <= start) continue;
+        const uint64_t seg = end - start;
+        const uint64_t seg_bytes = seg * sizeof(float);
+
+        if (!cuda_ok(cudaSetDevice(dev), "split output set device")) return 0;
+        g_active_device = dev;
+        float *x_dev = (float *)cuda_device_buffer_alloc(&g_output_split_x[dev],
+                                                         &g_output_split_x_bytes[dev],
+                                                         x_bytes,
+                                                         "split output activation");
+        float *out_dev = (float *)cuda_device_buffer_alloc(&g_output_split_out[dev],
+                                                           &g_output_split_out_bytes[dev],
+                                                           seg_bytes,
+                                                           "split output logits");
+        if (!x_dev || !out_dev) return 0;
+
+        cudaError_t err = cudaMemcpyAsync(x_dev, x->ptr, (size_t)x_bytes, cudaMemcpyDefault, 0);
+        if (err != cudaSuccess) {
+            fprintf(stderr, "ds4: CUDA split output activation copy failed: %s\n", cudaGetErrorString(err));
+            (void)cudaGetLastError();
+            return 0;
+        }
+
+        ds4_gpu_tensor x_local = {x_dev, x_bytes, 0, dev};
+        ds4_gpu_tensor out_local = {out_dev, seg_bytes, 0, dev};
+        if (!cuda_matmul_q8_0_tensor_labeled(&out_local,
+                                             model_map,
+                                             model_size,
+                                             weight_offset + start * row_bytes,
+                                             in_dim,
+                                             seg,
+                                             &x_local,
+                                             1,
+                                             "output_split")) {
+            return 0;
+        }
+
+        err = cudaMemcpyAsync((float *)out->ptr + start, out_dev, (size_t)seg_bytes, cudaMemcpyDefault, 0);
+        if (err != cudaSuccess) {
+            fprintf(stderr, "ds4: CUDA split output logits copy failed: %s\n", cudaGetErrorString(err));
+            (void)cudaGetLastError();
+            return 0;
+        }
+    }
+
+    for (int i = 0; i < ndev; i++) {
+        const int dev = devices[i];
+        if (!cuda_ok(cudaSetDevice(dev), "split output sync set device")) return 0;
+        if (!cuda_ok(cudaDeviceSynchronize(), "split output synchronize")) return 0;
+    }
+    if (!cuda_ok(cudaSetDevice(primary), "split output restore primary")) return 0;
+    g_active_device = primary;
+    return 1;
 }
 
 extern "C" int ds4_gpu_matmul_q8_0_pair_tensor(

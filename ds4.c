@@ -9863,14 +9863,24 @@ static bool metal_graph_encode_output_head(
     if (ok) {
         metal_graph_debug_dump_tensor("result_norm", g->output_norm, DS4_N_EMBD, DS4_N_LAYER, 0);
     }
-    if (ok) ok = ds4_gpu_matmul_q8_0_tensor(g->logits,
-                                              model->map,
-                                              model->size,
-                                              weights->output->abs_offset,
-                                              DS4_N_EMBD,
-                                              vocab_dim,
-                                              g->output_norm,
-                                              1) != 0;
+    if (ok && getenv("DS4_CUDA_SPLIT_OUTPUT_HEAD") != NULL) {
+        ok = ds4_gpu_matmul_q8_0_split_output_tensor(g->logits,
+                                                     model->map,
+                                                     model->size,
+                                                     weights->output->abs_offset,
+                                                     DS4_N_EMBD,
+                                                     vocab_dim,
+                                                     g->output_norm) != 0;
+    } else if (ok) {
+        ok = ds4_gpu_matmul_q8_0_tensor(g->logits,
+                                        model->map,
+                                        model->size,
+                                        weights->output->abs_offset,
+                                        DS4_N_EMBD,
+                                        vocab_dim,
+                                        g->output_norm,
+                                        1) != 0;
+    }
     if (ok) {
         metal_graph_debug_dump_tensor("result_output", g->logits, vocab_dim, DS4_N_LAYER, 0);
     }
