@@ -10320,6 +10320,7 @@ static int routed_moe_launch(
               getenv("DS4_CUDA_MOE_NO_DOWN_ROW64") == NULL));
         const uint32_t use_direct_down_sum6 =
             n_tokens == 1u && n_expert == 6u &&
+            getenv("DS4_CUDA_MOE_DIRECT_DOWN_SUM6") != NULL &&
             getenv("DS4_CUDA_MOE_NO_DIRECT_DOWN_SUM6") == NULL;
         uint32_t *sorted_pairs = NULL;
         uint32_t *sorted_offsets = NULL;
