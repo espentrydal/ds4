@@ -1204,6 +1204,16 @@ static int cublas_ok(cublasStatus_t st, const char *what) {
 
 extern "C" int ds4_gpu_init(void) {
     int dev = 0;
+    const char *dev_env = getenv("DS4_CUDA_DEVICE");
+    if (dev_env && dev_env[0]) {
+        char *end = NULL;
+        long parsed = strtol(dev_env, &end, 10);
+        if (end == dev_env || *end != '\0' || parsed < 0 || parsed > INT_MAX) {
+            fprintf(stderr, "ds4: invalid DS4_CUDA_DEVICE value: %s\n", dev_env);
+            return 0;
+        }
+        dev = (int)parsed;
+    }
     if (!cuda_ok(cudaSetDevice(dev), "set device")) return 0;
     cudaDeviceProp prop;
     if (cudaGetDeviceProperties(&prop, dev) == cudaSuccess) {
