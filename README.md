@@ -246,6 +246,19 @@ Start a local OpenAI/Anthropic-compatible server:
 ./ds4-server --ctx 100000 --kv-disk-dir /tmp/ds4-kv --kv-disk-space-mb 8192
 ```
 
+On a one-node V100 ppc64le system, use the committed launch helper to select
+the CUDA backend and the measured fast defaults for the 4-GPU split:
+
+```sh
+scripts/server-ds4-flash-v100-1node.sh
+```
+
+The helper defaults to the imatrix IQ2XXS Flash GGUF under
+`$HOME/models/deepseek-v4-flash`, binds `0.0.0.0:8080`, enables split output
+head fan-out, uses CUDA devices `0,1,2,3`, and keeps a disk KV cache under
+`$HOME/ds4-kv`. Override paths and sizing with `DS4_MODEL`, `DS4_HOST`,
+`DS4_PORT`, `DS4_CTX`, `DS4_KV_DIR`, or `DS4_KV_MB`.
+
 The server keeps one mutable backend/KV checkpoint in memory,
 so stateless clients that resend a longer version of the same prompt can reuse
 the shared prefix instead of pre-filling from token zero.
