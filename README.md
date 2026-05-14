@@ -154,6 +154,9 @@ intra-tensor splitting: whole DS4 layers are assigned to devices, peer access
 is enabled when CUDA permits it, and layer boundaries are synchronized for
 correctness with cross-device CUDA events. Set `DS4_CUDA_SYNC_DEVICE_SWITCH=1`
 to use the older blocking device synchronization path for debugging.
+Set `DS4_CUDA_ORDERED_F16_MATMUL=1` to use the older ordered one-token F16
+matmul kernels for debugging; the default CUDA decode path uses the faster
+parallel F16 kernels.
 
 `./ds4flash.gguf` is the default model path used by both binaries. Pass `-m` to
 select another supported GGUF from `./gguf/`. Run `./ds4 --help` and

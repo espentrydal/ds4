@@ -6216,10 +6216,11 @@ extern "C" int ds4_gpu_matmul_f16_tensor(ds4_gpu_tensor *out, const void *model_
         !serial_f16 &&
         router_shape &&
         getenv("DS4_CUDA_SERIAL_ROUTER") != NULL;
-    const int ordered_router =
+    const int ordered_f16 =
         !serial_f16 &&
         !serial_router &&
         n_tok == 1u &&
+        getenv("DS4_CUDA_ORDERED_F16_MATMUL") != NULL &&
         getenv("DS4_CUDA_NO_ORDERED_F16_MATMUL") == NULL;
     if (!serial_f16 && g_cublas_ready && n_tok > 1) {
         const uint64_t xh_count = n_tok * in_dim;
@@ -6255,7 +6256,7 @@ extern "C" int ds4_gpu_matmul_f16_tensor(ds4_gpu_tensor *out, const void *model_
         matmul_f16_serial_kernel<<<grid, 1>>>((float *)out->ptr, w, (const float *)x->ptr, in_dim, out_dim, n_tok);
         return cuda_ok(cudaGetLastError(), serial_router ? "matmul_f16_router_serial launch" : "matmul_f16_serial launch");
     }
-    if (ordered_router) {
+    if (ordered_f16) {
         matmul_f16_ordered_chunks_kernel<<<grid, 32>>>((float *)out->ptr, w, (const float *)x->ptr, in_dim, out_dim, n_tok);
         return cuda_ok(cudaGetLastError(), "matmul_f16_ordered_chunks launch");
     }
@@ -6281,7 +6282,7 @@ extern "C" int ds4_gpu_matmul_f16_pair_tensor(
         getenv("DS4_CUDA_NO_F16_PAIR_MATMUL") != NULL ||
         getenv("DS4_CUDA_SERIAL_F16_MATMUL") != NULL ||
         getenv("DS4_CUDA_SERIAL_ROUTER") != NULL ||
-        getenv("DS4_CUDA_NO_ORDERED_F16_MATMUL") != NULL) {
+        getenv("DS4_CUDA_ORDERED_F16_MATMUL") != NULL) {
         return ds4_gpu_matmul_f16_tensor(out0, model_map, model_size, weight0_offset,
                                            in_dim, out_dim, x, n_tok) &&
                ds4_gpu_matmul_f16_tensor(out1, model_map, model_size, weight1_offset,
