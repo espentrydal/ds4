@@ -6523,8 +6523,10 @@ extern "C" int ds4_gpu_matmul_f16_pair_tensor(
     if (!out0 || !out1 || !x || !model_map || in_dim == 0 || out_dim == 0 || n_tok == 0) {
         return 0;
     }
+    const int use_pair_f16 = getenv("DS4_CUDA_F16_PAIR_MATMUL") != NULL &&
+        getenv("DS4_CUDA_NO_F16_PAIR_MATMUL") == NULL;
     if (n_tok != 1 ||
-        getenv("DS4_CUDA_NO_F16_PAIR_MATMUL") != NULL ||
+        !use_pair_f16 ||
         getenv("DS4_CUDA_SERIAL_F16_MATMUL") != NULL ||
         getenv("DS4_CUDA_SERIAL_ROUTER") != NULL ||
         getenv("DS4_CUDA_ORDERED_F16_MATMUL") != NULL) {
