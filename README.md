@@ -146,6 +146,14 @@ On ppc64le Linux the build system uses `-mcpu=native` instead of
 `-march=native`. V100 systems should prefer `make cuda-v100` so NVCC targets
 `sm_70` explicitly.
 
+The ppc64le CUDA build also supports selecting the active GPU with
+`DS4_CUDA_DEVICE=N`. Multi-GPU V100 hosts can use a layer-granular split with
+`DS4_CUDA_DEVICES=0,1,2,3` and optional proportional weights in
+`DS4_CUDA_TENSOR_SPLIT=8.2,8.2,8.2,8.2`. This is not llama.cpp-style
+intra-tensor splitting: whole DS4 layers are assigned to devices, peer access
+is enabled when CUDA permits it, and layer boundaries are synchronized for
+correctness.
+
 `./ds4flash.gguf` is the default model path used by both binaries. Pass `-m` to
 select another supported GGUF from `./gguf/`. Run `./ds4 --help` and
 `./ds4-server --help` for the full flag list.

@@ -39,6 +39,7 @@ struct ds4_gpu_tensor {
     void *ptr;
     uint64_t bytes;
     int owner;
+    int device;
 };
 
 typedef struct {
@@ -85,7 +86,15 @@ static cudaStream_t g_model_prefetch_stream;
 static cudaStream_t g_model_upload_stream;
 static cublasHandle_t g_cublas;
 static int g_cublas_ready;
+static cublasHandle_t g_cublas_handles[64];
+static int g_cublas_handle_ready[64];
 static int g_quality_mode;
+static int g_primary_device;
+static int g_active_device = -1;
+static int g_split_devices[64];
+static double g_split_weights[64];
+static int g_split_count;
+static int g_device_count;
 
 struct cuda_model_range {
     const void *host_base;
@@ -1202,23 +1211,182 @@ static int cublas_ok(cublasStatus_t st, const char *what) {
     return 0;
 }
 
+static int cuda_parse_device_id(const char *s, int *out) {
+    if (!s || !s[0] || !out) return 0;
+    char *end = NULL;
+    long parsed = strtol(s, &end, 10);
+    if (end == s || *end != '\0' || parsed < 0 || parsed > INT_MAX) return 0;
+    *out = (int)parsed;
+    return 1;
+}
+
+static int cuda_set_active_device(int dev) {
+    if (dev < 0) return 0;
+    if (g_active_device == dev) return 1;
+    if (g_active_device >= 0 && g_split_count > 1) {
+        if (!cuda_ok(cudaDeviceSynchronize(), "device switch synchronize")) return 0;
+    }
+    if (!cuda_ok(cudaSetDevice(dev), "set device")) return 0;
+    g_active_device = dev;
+    if (dev >= 0 && dev < (int)(sizeof(g_cublas_handles) / sizeof(g_cublas_handles[0]))) {
+        if (!g_cublas_handle_ready[dev]) {
+            if (!cublas_ok(cublasCreate(&g_cublas_handles[dev]), "create handle")) return 0;
+            g_cublas_handle_ready[dev] = 1;
+        }
+        g_cublas = g_cublas_handles[dev];
+        g_cublas_ready = 1;
+        if (!cublas_ok(cublasSetStream(g_cublas, 0), "set stream")) return 0;
+        const cublasMath_t math_mode =
+            (g_quality_mode || getenv("DS4_CUDA_NO_TF32") != NULL)
+                ? CUBLAS_DEFAULT_MATH
+                : CUBLAS_TF32_TENSOR_OP_MATH;
+        (void)cublasSetMathMode(g_cublas, math_mode);
+    } else {
+        g_cublas = NULL;
+        g_cublas_ready = 0;
+    }
+    return 1;
+}
+
+static int cuda_parse_split_devices(void) {
+    g_split_count = 0;
+    const char *devices_env = getenv("DS4_CUDA_DEVICES");
+    const char *split_env = getenv("DS4_CUDA_TENSOR_SPLIT");
+    if (!devices_env || !devices_env[0]) return 1;
+
+    char *devices = strdup(devices_env);
+    char *splits = split_env && split_env[0] ? strdup(split_env) : NULL;
+    if (!devices || (split_env && split_env[0] && !splits)) {
+        free(devices);
+        free(splits);
+        return 0;
+    }
+
+    char *save_dev = NULL;
+    char *save_split = NULL;
+    char *tok_dev = strtok_r(devices, ",", &save_dev);
+    char *tok_split = splits ? strtok_r(splits, ",", &save_split) : NULL;
+    while (tok_dev && g_split_count < (int)(sizeof(g_split_devices) / sizeof(g_split_devices[0]))) {
+        int dev = -1;
+        if (!cuda_parse_device_id(tok_dev, &dev)) {
+            fprintf(stderr, "ds4: invalid DS4_CUDA_DEVICES entry: %s\n", tok_dev);
+            free(devices);
+            free(splits);
+            return 0;
+        }
+        if (g_device_count > 0 && dev >= g_device_count) {
+            fprintf(stderr, "ds4: DS4_CUDA_DEVICES entry %d is outside device count %d\n", dev, g_device_count);
+            free(devices);
+            free(splits);
+            return 0;
+        }
+        double weight = 1.0;
+        if (tok_split) {
+            char *end = NULL;
+            weight = strtod(tok_split, &end);
+            if (end == tok_split || *end != '\0' || weight <= 0.0) {
+                fprintf(stderr, "ds4: invalid DS4_CUDA_TENSOR_SPLIT entry: %s\n", tok_split);
+                free(devices);
+                free(splits);
+                return 0;
+            }
+            tok_split = strtok_r(NULL, ",", &save_split);
+        }
+        g_split_devices[g_split_count] = dev;
+        g_split_weights[g_split_count] = weight;
+        g_split_count++;
+        tok_dev = strtok_r(NULL, ",", &save_dev);
+    }
+    if (tok_dev) {
+        fprintf(stderr, "ds4: too many DS4_CUDA_DEVICES entries\n");
+        free(devices);
+        free(splits);
+        return 0;
+    }
+    if (tok_split) {
+        fprintf(stderr, "ds4: DS4_CUDA_TENSOR_SPLIT has more entries than DS4_CUDA_DEVICES\n");
+        free(devices);
+        free(splits);
+        return 0;
+    }
+    free(devices);
+    free(splits);
+    return g_split_count > 0;
+}
+
+static int cuda_layer_device(uint32_t layer, uint32_t n_layers) {
+    if (g_split_count <= 0 || n_layers == 0) return g_primary_device;
+    if (layer >= n_layers) layer = n_layers - 1u;
+    double total = 0.0;
+    for (int i = 0; i < g_split_count; i++) total += g_split_weights[i];
+    if (total <= 0.0) return g_primary_device;
+    const double pos = ((double)layer + 0.5) / (double)n_layers * total;
+    double acc = 0.0;
+    for (int i = 0; i < g_split_count; i++) {
+        acc += g_split_weights[i];
+        if (pos <= acc) return g_split_devices[i];
+    }
+    return g_split_devices[g_split_count - 1];
+}
+
+static void cuda_enable_peer_access_for_splits(void) {
+    if (g_split_count <= 1) return;
+    for (int i = 0; i < g_split_count; i++) {
+        const int src = g_split_devices[i];
+        (void)cudaSetDevice(src);
+        for (int j = 0; j < g_split_count; j++) {
+            const int dst = g_split_devices[j];
+            if (src == dst) continue;
+            int can = 0;
+            if (cudaDeviceCanAccessPeer(&can, src, dst) == cudaSuccess && can) {
+                cudaError_t err = cudaDeviceEnablePeerAccess(dst, 0);
+                if (err != cudaSuccess && err != cudaErrorPeerAccessAlreadyEnabled) {
+                    fprintf(stderr, "ds4: CUDA peer access %d -> %d skipped: %s\n",
+                            src, dst, cudaGetErrorString(err));
+                }
+                (void)cudaGetLastError();
+            }
+        }
+    }
+    (void)cudaSetDevice(g_primary_device);
+    g_active_device = g_primary_device;
+}
+
 extern "C" int ds4_gpu_init(void) {
     int dev = 0;
     const char *dev_env = getenv("DS4_CUDA_DEVICE");
     if (dev_env && dev_env[0]) {
-        char *end = NULL;
-        long parsed = strtol(dev_env, &end, 10);
-        if (end == dev_env || *end != '\0' || parsed < 0 || parsed > INT_MAX) {
+        if (!cuda_parse_device_id(dev_env, &dev)) {
             fprintf(stderr, "ds4: invalid DS4_CUDA_DEVICE value: %s\n", dev_env);
             return 0;
         }
-        dev = (int)parsed;
     }
-    if (!cuda_ok(cudaSetDevice(dev), "set device")) return 0;
+    if (cudaGetDeviceCount(&g_device_count) != cudaSuccess) g_device_count = 0;
+    if (g_device_count > 0 && dev >= g_device_count) {
+        fprintf(stderr, "ds4: DS4_CUDA_DEVICE %d is outside device count %d\n", dev, g_device_count);
+        return 0;
+    }
+    g_primary_device = dev;
+    g_active_device = -1;
+    if (!cuda_parse_split_devices()) return 0;
+    if (g_split_count == 0) {
+        g_split_devices[0] = g_primary_device;
+        g_split_weights[0] = 1.0;
+        g_split_count = 1;
+    }
+    if (!cuda_set_active_device(g_primary_device)) return 0;
+    cuda_enable_peer_access_for_splits();
     cudaDeviceProp prop;
-    if (cudaGetDeviceProperties(&prop, dev) == cudaSuccess) {
+    if (cudaGetDeviceProperties(&prop, g_primary_device) == cudaSuccess) {
         fprintf(stderr, "ds4: CUDA backend initialized on %s (sm_%d%d)\n",
                 prop.name, prop.major, prop.minor);
+    }
+    if (g_split_count > 1) {
+        fprintf(stderr, "ds4: CUDA layer split devices:");
+        for (int i = 0; i < g_split_count; i++) {
+            fprintf(stderr, " %d(%.3g)", g_split_devices[i], g_split_weights[i]);
+        }
+        fputc('\n', stderr);
     }
     if (!g_cublas_ready) {
         if (!cublas_ok(cublasCreate(&g_cublas), "create handle")) return 0;
@@ -1232,13 +1400,29 @@ extern "C" int ds4_gpu_init(void) {
     return 1;
 }
 
+extern "C" int ds4_gpu_has_device_split(void) {
+    return g_split_count > 1;
+}
+
+extern "C" int ds4_gpu_use_primary_device(void) {
+    return cuda_set_active_device(g_primary_device);
+}
+
+extern "C" int ds4_gpu_use_layer_device(uint32_t layer, uint32_t n_layers) {
+    return cuda_set_active_device(cuda_layer_device(layer, n_layers));
+}
+
 extern "C" void ds4_gpu_cleanup(void) {
     (void)cudaDeviceSynchronize();
-    if (g_cublas_ready) {
-        (void)cublasDestroy(g_cublas);
-        g_cublas_ready = 0;
-        g_cublas = NULL;
+    for (size_t i = 0; i < sizeof(g_cublas_handles) / sizeof(g_cublas_handles[0]); i++) {
+        if (g_cublas_handle_ready[i]) {
+            (void)cublasDestroy(g_cublas_handles[i]);
+            g_cublas_handles[i] = NULL;
+            g_cublas_handle_ready[i] = 0;
+        }
     }
+    g_cublas_ready = 0;
+    g_cublas = NULL;
     cuda_model_range_release_all();
     cuda_q8_f16_cache_release_all();
     g_q8_f16_disabled_after_oom = 0;
@@ -1309,6 +1493,9 @@ extern "C" ds4_gpu_tensor *ds4_gpu_tensor_alloc(uint64_t bytes) {
     }
     t->bytes = bytes;
     t->owner = 1;
+    if (cudaGetDevice(&t->device) != cudaSuccess) {
+        t->device = g_active_device >= 0 ? g_active_device : g_primary_device;
+    }
     return t;
 }
 
@@ -1319,12 +1506,16 @@ extern "C" ds4_gpu_tensor *ds4_gpu_tensor_view(const ds4_gpu_tensor *base, uint6
     t->ptr = (char *)base->ptr + offset;
     t->bytes = bytes;
     t->owner = 0;
+    t->device = base->device;
     return t;
 }
 
 extern "C" void ds4_gpu_tensor_free(ds4_gpu_tensor *tensor) {
     if (!tensor) return;
-    if (tensor->owner && tensor->ptr) (void)cudaFree(tensor->ptr);
+    if (tensor->owner && tensor->ptr) {
+        (void)cuda_set_active_device(tensor->device);
+        (void)cudaFree(tensor->ptr);
+    }
     free(tensor);
 }
 
@@ -1341,17 +1532,20 @@ extern "C" void *ds4_gpu_tensor_contents(ds4_gpu_tensor *tensor) {
 extern "C" int ds4_gpu_tensor_fill_f32(ds4_gpu_tensor *tensor, float value, uint64_t count) {
     if (!tensor || count > tensor->bytes / sizeof(float)) return 0;
     if (count == 0) return 1;
+    if (!cuda_set_active_device(tensor->device)) return 0;
     fill_f32_kernel<<<(count + 255u) / 256u, 256>>>((float *)tensor->ptr, count, value);
     return cuda_ok(cudaGetLastError(), "tensor fill f32 launch");
 }
 
 extern "C" int ds4_gpu_tensor_write(ds4_gpu_tensor *tensor, uint64_t offset, const void *data, uint64_t bytes) {
     if (!tensor || !data || offset > tensor->bytes || bytes > tensor->bytes - offset) return 0;
+    if (!cuda_set_active_device(tensor->device)) return 0;
     return cuda_ok(cudaMemcpy((char *)tensor->ptr + offset, data, (size_t)bytes, cudaMemcpyHostToDevice), "tensor write");
 }
 
 extern "C" int ds4_gpu_tensor_read(const ds4_gpu_tensor *tensor, uint64_t offset, void *data, uint64_t bytes) {
     if (!tensor || !data || offset > tensor->bytes || bytes > tensor->bytes - offset) return 0;
+    if (!cuda_set_active_device(tensor->device)) return 0;
     return cuda_ok(cudaMemcpy(data, (const char *)tensor->ptr + offset, (size_t)bytes, cudaMemcpyDeviceToHost), "tensor read");
 }
 
@@ -1363,10 +1557,11 @@ extern "C" int ds4_gpu_tensor_copy(ds4_gpu_tensor *dst, uint64_t dst_offset,
         return 0;
     }
     if (bytes == 0) return 1;
+    if (!cuda_set_active_device(dst->device)) return 0;
     return cuda_ok(cudaMemcpy((char *)dst->ptr + dst_offset,
                               (const char *)src->ptr + src_offset,
                               (size_t)bytes,
-                              cudaMemcpyDeviceToDevice),
+                              cudaMemcpyDefault),
                    "tensor copy");
 }
 
