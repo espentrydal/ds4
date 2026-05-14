@@ -1,7 +1,10 @@
 CC ?= cc
 UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
 
 ifeq ($(UNAME_S),Darwin)
+NATIVE_CPU_FLAG ?= -mcpu=native
+else ifeq ($(UNAME_M),ppc64le)
 NATIVE_CPU_FLAG ?= -mcpu=native
 else
 NATIVE_CPU_FLAG ?= -march=native
@@ -32,7 +35,7 @@ CPU_CORE_OBJS = ds4_cpu.o
 METAL_LDLIBS := $(LDLIBS)
 endif
 
-.PHONY: all help clean test cpu cuda cuda-spark cuda-generic cuda-regression
+.PHONY: all help clean test cpu cuda cuda-spark cuda-generic cuda-v100 cuda-regression
 
 ifeq ($(UNAME_S),Darwin)
 all: ds4 ds4-server ds4-bench
@@ -67,6 +70,7 @@ help:
 	@echo "DS4 build targets:"
 	@echo "  make cuda-spark          Build CUDA for DGX Spark / GB10"
 	@echo "  make cuda-generic        Build CUDA for a generic local CUDA GPU"
+	@echo "  make cuda-v100           Build CUDA for NVIDIA V100 / sm_70"
 	@echo "  make cuda CUDA_ARCH=sm_N Build CUDA with an explicit nvcc -arch value"
 	@echo "  make cpu                 Build CPU-only ./ds4, ./ds4-server, and ./ds4-bench"
 	@echo "  make test                Build and run tests"
@@ -77,6 +81,9 @@ cuda-spark:
 
 cuda-generic:
 	$(MAKE) ds4 ds4-server ds4-bench CUDA_ARCH=native
+
+cuda-v100:
+	$(MAKE) ds4 ds4-server ds4-bench CUDA_ARCH=sm_70
 
 cuda:
 	@if [ -z "$(strip $(CUDA_ARCH))" ]; then \

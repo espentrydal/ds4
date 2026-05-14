@@ -1406,6 +1406,15 @@ static bool accelerator_cache_model_tensor_spans(const ds4_model *m, uint64_t *c
             char label[96];
             snprintf(label, sizeof(label), "tensor-span:%" PRIu64, merged);
             if (ds4_gpu_cache_model_range(m->map, m->size, off, chunk_end - off, label) == 0) {
+                if (getenv("DS4_CUDA_STRICT_WEIGHT_CACHE") == NULL) {
+                    fprintf(stderr,
+                            "ds4: accelerator model cache full after %.2f GiB; "
+                            "continuing with uncached tensor fallback\n",
+                            (double)cached / 1073741824.0);
+                    free(spans);
+                    if (cached_out) *cached_out = cached;
+                    return true;
+                }
                 fprintf(stderr,
                         "ds4: accelerator failed to cache model tensor span %" PRIu64
                         " at offset %" PRIu64 "\n",

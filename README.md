@@ -138,8 +138,13 @@ Then build:
 make                  # macOS Metal
 make cuda-spark       # Linux CUDA, DGX Spark / GB10
 make cuda-generic     # Linux CUDA, other local CUDA GPUs
+make cuda-v100        # Linux CUDA, NVIDIA V100 / sm_70
 make cpu              # CPU-only diagnostics build
 ```
+
+On ppc64le Linux the build system uses `-mcpu=native` instead of
+`-march=native`. V100 systems should prefer `make cuda-v100` so NVCC targets
+`sm_70` explicitly.
 
 `./ds4flash.gguf` is the default model path used by both binaries. Pass `-m` to
 select another supported GGUF from `./gguf/`. Run `./ds4 --help` and
