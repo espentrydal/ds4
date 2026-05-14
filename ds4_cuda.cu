@@ -5742,14 +5742,16 @@ __global__ static void topk_mask_kernel(float *mask, const uint32_t *topk, uint3
 }
 
 extern "C" int ds4_gpu_embed_token_hc_tensor(ds4_gpu_tensor *out_hc, const void *model_map, uint64_t model_size, uint64_t weight_offset, uint32_t n_vocab, uint32_t token, uint32_t n_embd, uint32_t n_hc) {
-    (void)n_vocab;
     if (!out_hc || !model_map || weight_offset >= model_size) return 0;
-    uint64_t weight_bytes = (uint64_t)n_vocab * n_embd * sizeof(uint16_t);
-    if (weight_offset > model_size || weight_bytes > model_size - weight_offset) return 0;
-    const char *wptr = cuda_model_range_ptr(model_map, weight_offset, weight_bytes, "token_embd");
+    if (token >= n_vocab) token = 0;
+    const uint64_t row_bytes = (uint64_t)n_embd * sizeof(uint16_t);
+    if (token > UINT64_MAX / row_bytes) return 0;
+    const uint64_t row_offset = weight_offset + (uint64_t)token * row_bytes;
+    if (row_offset < weight_offset || row_offset > model_size || row_bytes > model_size - row_offset) return 0;
+    const char *wptr = cuda_model_range_ptr(model_map, row_offset, row_bytes, "token_embd_row");
     if (!wptr) return 0;
     uint32_t n = n_embd * n_hc;
-    embed_token_hc_kernel<<<(n + 255) / 256, 256>>>((float *)out_hc->ptr, (const unsigned short *)wptr, token, n_embd, n_hc);
+    embed_token_hc_kernel<<<(n + 255) / 256, 256>>>((float *)out_hc->ptr, (const unsigned short *)wptr, 0, n_embd, n_hc);
     return cuda_ok(cudaGetLastError(), "embed token launch");
 }
 
