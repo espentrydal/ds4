@@ -154,14 +154,15 @@ static uint64_t g_model_load_progress_next;
 static double g_model_load_progress_last;
 static int g_model_load_progress_started;
 static int g_model_load_progress_tty;
-static void *g_cuda_tmp;
-static uint64_t g_cuda_tmp_bytes;
+static void *g_cuda_tmp[64];
+static uint64_t g_cuda_tmp_bytes[64];
 static void *g_model_stage_raw[4];
 static void *g_model_stage[4];
 static cudaEvent_t g_model_stage_event[4];
 static uint64_t g_model_stage_bytes;
 
 static int cuda_ok(cudaError_t err, const char *what);
+static int cuda_model_cache_device(void);
 static const char *cuda_model_range_ptr_from_fd(
         const void *model_map,
         uint64_t offset,
@@ -182,11 +183,12 @@ __global__ static void dequant_q8_0_to_f32_kernel(
 
 static void *cuda_tmp_alloc(uint64_t bytes, const char *what) {
     if (bytes == 0) return NULL;
-    if (g_cuda_tmp_bytes >= bytes) return g_cuda_tmp;
-    if (g_cuda_tmp) {
-        (void)cudaFree(g_cuda_tmp);
-        g_cuda_tmp = NULL;
-        g_cuda_tmp_bytes = 0;
+    const int cache_dev = cuda_model_cache_device();
+    if (g_cuda_tmp_bytes[cache_dev] >= bytes) return g_cuda_tmp[cache_dev];
+    if (g_cuda_tmp[cache_dev]) {
+        (void)cudaFree(g_cuda_tmp[cache_dev]);
+        g_cuda_tmp[cache_dev] = NULL;
+        g_cuda_tmp_bytes[cache_dev] = 0;
     }
     void *ptr = NULL;
     cudaError_t err = cudaMalloc(&ptr, (size_t)bytes);
@@ -196,9 +198,9 @@ static void *cuda_tmp_alloc(uint64_t bytes, const char *what) {
         (void)cudaGetLastError();
         return NULL;
     }
-    g_cuda_tmp = ptr;
-    g_cuda_tmp_bytes = bytes;
-    return g_cuda_tmp;
+    g_cuda_tmp[cache_dev] = ptr;
+    g_cuda_tmp_bytes[cache_dev] = bytes;
+    return g_cuda_tmp[cache_dev];
 }
 
 static int cuda_attention_score_buffer_fits(uint32_t n_comp) {
@@ -1556,11 +1558,17 @@ extern "C" void ds4_gpu_cleanup(void) {
     memset(g_q8_f16_disabled_after_oom, 0, sizeof(g_q8_f16_disabled_after_oom));
     memset(g_q8_f16_budget_notice_printed, 0, sizeof(g_q8_f16_budget_notice_printed));
     cuda_q8_f32_cache_release_all();
-    if (g_cuda_tmp) {
-        (void)cudaFree(g_cuda_tmp);
-        g_cuda_tmp = NULL;
-        g_cuda_tmp_bytes = 0;
+    int saved_dev = -1;
+    (void)cudaGetDevice(&saved_dev);
+    for (size_t i = 0; i < sizeof(g_cuda_tmp) / sizeof(g_cuda_tmp[0]); i++) {
+        if (g_cuda_tmp[i]) {
+            (void)cudaSetDevice((int)i);
+            (void)cudaFree(g_cuda_tmp[i]);
+            g_cuda_tmp[i] = NULL;
+            g_cuda_tmp_bytes[i] = 0;
+        }
     }
+    if (saved_dev >= 0) (void)cudaSetDevice(saved_dev);
     for (size_t i = 0; i < 4; i++) {
         if (g_model_stage_event[i]) {
             (void)cudaEventDestroy(g_model_stage_event[i]);
