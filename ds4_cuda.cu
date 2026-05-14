@@ -88,6 +88,8 @@ static cublasHandle_t g_cublas;
 static int g_cublas_ready;
 static cublasHandle_t g_cublas_handles[64];
 static int g_cublas_handle_ready[64];
+static cudaEvent_t g_device_switch_events[64];
+static int g_device_switch_event_ready[64];
 static int g_quality_mode;
 static int g_primary_device;
 static int g_active_device = -1;
@@ -1223,11 +1225,33 @@ static int cuda_parse_device_id(const char *s, int *out) {
 static int cuda_set_active_device(int dev) {
     if (dev < 0) return 0;
     if (g_active_device == dev) return 1;
+    const int prev = g_active_device;
     if (g_active_device >= 0 && g_split_count > 1) {
-        if (!cuda_ok(cudaDeviceSynchronize(), "device switch synchronize")) return 0;
+        if (getenv("DS4_CUDA_SYNC_DEVICE_SWITCH") != NULL) {
+            if (!cuda_ok(cudaDeviceSynchronize(), "device switch synchronize")) return 0;
+        } else if (prev >= 0 && prev < (int)(sizeof(g_device_switch_events) / sizeof(g_device_switch_events[0]))) {
+            if (!g_device_switch_event_ready[prev]) {
+                cudaError_t err = cudaEventCreateWithFlags(&g_device_switch_events[prev],
+                                                           cudaEventDisableTiming);
+                if (err != cudaSuccess) {
+                    fprintf(stderr, "ds4: CUDA device switch event create failed: %s\n",
+                            cudaGetErrorString(err));
+                    (void)cudaGetLastError();
+                    return 0;
+                }
+                g_device_switch_event_ready[prev] = 1;
+            }
+            if (!cuda_ok(cudaEventRecord(g_device_switch_events[prev], 0), "device switch event record")) return 0;
+        }
     }
     if (!cuda_ok(cudaSetDevice(dev), "set device")) return 0;
     g_active_device = dev;
+    if (prev >= 0 && prev != dev && g_split_count > 1 &&
+        getenv("DS4_CUDA_SYNC_DEVICE_SWITCH") == NULL &&
+        prev < (int)(sizeof(g_device_switch_events) / sizeof(g_device_switch_events[0])) &&
+        g_device_switch_event_ready[prev]) {
+        if (!cuda_ok(cudaStreamWaitEvent(0, g_device_switch_events[prev], 0), "device switch event wait")) return 0;
+    }
     if (dev >= 0 && dev < (int)(sizeof(g_cublas_handles) / sizeof(g_cublas_handles[0]))) {
         if (!g_cublas_handle_ready[dev]) {
             if (!cublas_ok(cublasCreate(&g_cublas_handles[dev]), "create handle")) return 0;
@@ -1419,6 +1443,11 @@ extern "C" void ds4_gpu_cleanup(void) {
             (void)cublasDestroy(g_cublas_handles[i]);
             g_cublas_handles[i] = NULL;
             g_cublas_handle_ready[i] = 0;
+        }
+        if (g_device_switch_event_ready[i]) {
+            (void)cudaEventDestroy(g_device_switch_events[i]);
+            g_device_switch_events[i] = NULL;
+            g_device_switch_event_ready[i] = 0;
         }
     }
     g_cublas_ready = 0;

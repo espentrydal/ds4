@@ -152,7 +152,8 @@ The ppc64le CUDA build also supports selecting the active GPU with
 `DS4_CUDA_TENSOR_SPLIT=8.2,8.2,8.2,8.2`. This is not llama.cpp-style
 intra-tensor splitting: whole DS4 layers are assigned to devices, peer access
 is enabled when CUDA permits it, and layer boundaries are synchronized for
-correctness.
+correctness with cross-device CUDA events. Set `DS4_CUDA_SYNC_DEVICE_SWITCH=1`
+to use the older blocking device synchronization path for debugging.
 
 `./ds4flash.gguf` is the default model path used by both binaries. Pass `-m` to
 select another supported GGUF from `./gguf/`. Run `./ds4 --help` and
