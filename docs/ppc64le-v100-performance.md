@@ -32,11 +32,30 @@ ds4: prefill: 0.13 t/s, generation: 9.41 t/s
 
 The profile is slower than normal generation because the stage profiler
 synchronizes frequently. The normal 96-token generation benchmark for this
-build was:
+build after the one-token F16 cuBLAS change was:
 
 ```text
 ds4: prefill: 0.19 t/s, generation: 10.72 t/s
 ```
+
+Later decode-path tuning on the same model and CUDA split measured:
+
+```text
+MTP disabled baseline:                 generation: 11.03 t/s
+MTP draft=1:                           generation: 10.98 t/s
+MTP draft=2:                           generation:  4.71 t/s
+generic MoE down path default:          generation: 11.20 t/s
+reference attention-output path default: generation: 11.48 t/s
+fused attention-output opt-in:          generation: 11.24 t/s
+```
+
+The optional MTP GGUF is usable with `--mtp`, but on this one-node V100 setup it
+did not produce a useful decode-speed win. `--mtp-draft 2` also triggered CUDA
+allocation failures for the MTP MoE ranges and should not be used as a default.
+
+The current attention-output default uses the reference HC expansion path.
+Set `DS4_METAL_ENABLE_ATTN_OUT_HC_FUSION=1` only for comparison with the older
+fused path.
 
 Decode stage totals from the synchronized profile:
 

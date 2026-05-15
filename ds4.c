@@ -8979,7 +8979,11 @@ static bool metal_graph_use_reference_shared_down_hc(void) {
 
 static bool metal_graph_use_reference_attn_out_hc(void) {
     static int cache = -1;
-    return metal_graph_env_flag("DS4_METAL_DISABLE_ATTN_OUT_HC_FUSION", &cache);
+    if (cache < 0) {
+        cache = getenv("DS4_METAL_ENABLE_ATTN_OUT_HC_FUSION") != NULL &&
+                getenv("DS4_METAL_DISABLE_ATTN_OUT_HC_FUSION") == NULL ? 0 : 1;
+    }
+    return cache != 0;
 }
 
 static bool metal_graph_decode_hc_pre(
