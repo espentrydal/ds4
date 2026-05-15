@@ -25,6 +25,12 @@ Service-path check on 2026-05-15, after retiring the stale llama.cpp
 tok/s. The stale RPC process had been reserving about 360 MiB on each GPU, which
 was enough to reduce DS4 CUDA cache headroom.
 
+A later 2026-05-15 dev sweep toward 15 tok/s tested lower F16-cache reserves,
+skewed tensor split, direct MoE down+sum, disabled attention-output F16 cache,
+explicit fast MoE SILU, and a shared-`midq` decode down kernel. None improved
+the service path beyond the roughly 13 tok/s server-side result; several
+regressed.
+
 ## Current Profile
 
 Profile command used the same fast CUDA split plus:
