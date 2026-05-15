@@ -15,3 +15,4 @@ Files:
 - `ppc64le-v100-performance.md`: measured configuration, commits, and profile
   results.
 - `ppc64le-v100-next-routes.md`: ranked remaining routes for larger speedups.
+- `runtime-services.md`: production systemd services and launch-script layout.

@@ -14,6 +14,11 @@ Use `scripts/server-ds4-flash-v100-1node.sh` for OpenAI/Anthropic-compatible
 serving, or `scripts/profile-ds4-flash-v100-1node.sh` for a reproducible decode
 profile run.
 
+Production serving now defaults to `DS4_CTX=131072` to reduce VRAM pressure and
+protect decode speed. The historical measurements below were mostly taken at
+262K context unless otherwise noted; use them as kernel/runtime comparisons, not
+as a claim that 262K is the preferred production context.
+
 ## Current Profile
 
 Profile command used the same fast CUDA split plus:
