@@ -24,18 +24,18 @@ DS4_METAL_DECODE_STAGE_PROFILE=1
 DS4_CUDA_MOE_PROFILE=1
 ```
 
-Short profile run result:
+Current short profile run result after the routed-MoE fused-midq change:
 
 ```text
-ds4: prefill: 0.13 t/s, generation: 9.41 t/s
+ds4: prefill: 0.13 t/s, generation: 10.45 t/s
 ```
 
 The profile is slower than normal generation because the stage profiler
-synchronizes frequently. The normal 96-token generation benchmark for this
-build after the one-token F16 cuBLAS change was:
+synchronizes frequently. The current normal 96-token generation benchmark for
+this build is:
 
 ```text
-ds4: prefill: 0.19 t/s, generation: 10.72 t/s
+ds4: prefill: 0.19 t/s, generation: 12.76 t/s
 ```
 
 Later decode-path tuning on the same model and CUDA split measured:
@@ -91,29 +91,30 @@ lookup and half/full-warp down kernels, regressed.
 Decode stage totals from the synchronized profile:
 
 ```text
-routed_moe          243.236 ms total, 0.707 ms avg
-attn_output         130.105 ms total, 0.378 ms avg
-q_path              120.330 ms total, 0.350 ms avg
-shared_down          61.547 ms total, 0.179 ms avg
-compressor_indexer   51.913 ms total, 0.151 ms avg
-ffn_hc_pre           42.682 ms total, 0.124 ms avg
-attn_hc_pre          41.548 ms total, 0.121 ms avg
-shared_gate_up       35.037 ms total, 0.102 ms avg
-attention            33.485 ms total, 0.097 ms avg
-router               28.487 ms total, 0.083 ms avg
-kv_path              13.797 ms total, 0.040 ms avg
+routed_moe          227.840 ms total, 0.662 ms avg
+attn_output          95.423 ms total, 0.277 ms avg
+q_path               64.504 ms total, 0.188 ms avg
+shared_down          60.081 ms total, 0.175 ms avg
+compressor_indexer   52.271 ms total, 0.152 ms avg
+ffn_hc_pre           42.125 ms total, 0.122 ms avg
+attn_hc_pre          41.613 ms total, 0.121 ms avg
+shared_gate_up       33.676 ms total, 0.098 ms avg
+attention            33.182 ms total, 0.096 ms avg
+router               23.302 ms total, 0.068 ms avg
+attn_hc_post         22.093 ms total, 0.064 ms avg
+kv_path              13.998 ms total, 0.041 ms avg
 ```
 
 MoE subtotals:
 
 ```text
-total  216.788 ms total, 0.630 ms avg
-down   107.295 ms total, 0.312 ms avg
-gateup  98.202 ms total, 0.285 ms avg
-xq       5.592 ms total, 0.016 ms avg
-midq     4.257 ms total, 0.012 ms avg
-sort     0.647 ms total, 0.002 ms avg
-sum      0.635 ms total, 0.002 ms avg
+total  201.649 ms total, 0.586 ms avg
+down   102.571 ms total, 0.298 ms avg
+gateup  88.870 ms total, 0.258 ms avg
+xq       5.748 ms total, 0.017 ms avg
+sum      2.964 ms total, 0.009 ms avg
+sort     0.683 ms total, 0.002 ms avg
+midq     0.650 ms total, 0.002 ms avg
 ```
 
 ## CUDA Graph Island Triage
