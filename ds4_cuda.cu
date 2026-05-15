@@ -8796,6 +8796,113 @@ __global__ static void moe_gate_up_mid_decode_lut_qwarp32_kernel(
     }
 }
 
+__global__ static void moe_gate_up_midq_decode_lut_qwarp32_kernel(
+        cuda_block_q8_K *midq_out,
+        const char *gate_base,
+        const char *up_base,
+        const cuda_block_q8_K *xq,
+        const int32_t *selected,
+        const float *weights,
+        uint64_t gate_expert_bytes,
+        uint64_t gate_row_bytes,
+        uint32_t xq_blocks,
+        uint32_t expert_mid_dim,
+        uint32_t n_expert,
+        float clamp) {
+    uint32_t lane = threadIdx.x & 7u;
+    uint32_t row_lane = threadIdx.x >> 3u;
+    uint32_t block = blockIdx.x;
+    uint32_t pair = blockIdx.y;
+    uint32_t tok = pair / n_expert;
+    uint32_t slot = pair - tok * n_expert;
+    int32_t expert_i = selected[(uint64_t)tok * n_expert + slot];
+    if (expert_i < 0) expert_i = 0;
+    uint32_t expert = (uint32_t)expert_i;
+    const cuda_block_q8_K *xqb = xq + (uint64_t)tok * xq_blocks;
+    __shared__ cuda_block_q8_K sxq[16];
+    __shared__ uint64_t s_iq2_grid[256];
+    __shared__ uint8_t s_iq2_signs[128];
+    __shared__ float smid[CUDA_QK_K];
+    __shared__ float abs_part[CUDA_QK_K];
+    __shared__ float val_part[CUDA_QK_K];
+    __shared__ float maxv_s;
+    __shared__ float iscale_s;
+    if (xq_blocks <= 16u) {
+        for (uint32_t i = threadIdx.x; i < xq_blocks; i += blockDim.x) sxq[i] = xqb[i];
+        for (uint32_t i = threadIdx.x; i < 256u; i += blockDim.x) s_iq2_grid[i] = cuda_iq2xxs_grid[i];
+        for (uint32_t i = threadIdx.x; i < 128u; i += blockDim.x) s_iq2_signs[i] = cuda_ksigns_iq2xs[i];
+        __syncthreads();
+        xqb = sxq;
+    }
+    for (uint32_t rr = 0; rr < 8u; rr++) {
+        uint32_t local_row = rr * 32u + row_lane;
+        uint32_t row = block * CUDA_QK_K + local_row;
+        float mid = 0.0f;
+        if (row < expert_mid_dim) {
+            const cuda_block_iq2_xxs *gr = (const cuda_block_iq2_xxs *)(gate_base + (uint64_t)expert * gate_expert_bytes + (uint64_t)row * gate_row_bytes);
+            const cuda_block_iq2_xxs *ur = (const cuda_block_iq2_xxs *)(up_base + (uint64_t)expert * gate_expert_bytes + (uint64_t)row * gate_row_bytes);
+            float gate = 0.0f;
+            float up = 0.0f;
+            for (uint32_t b = lane; b < xq_blocks; b += 8u) {
+                gate += dev_dot_iq2_xxs_q8_K_block_lut(gr + b, xqb + b, s_iq2_grid, s_iq2_signs);
+                up += dev_dot_iq2_xxs_q8_K_block_lut(ur + b, xqb + b, s_iq2_grid, s_iq2_signs);
+            }
+            gate = quarter_warp_sum_f32(gate, lane);
+            up = quarter_warp_sum_f32(up, lane);
+            if (lane == 0) {
+                if (clamp > 1.0e-6f) {
+                    if (gate > clamp) gate = clamp;
+                    if (up > clamp) up = clamp;
+                    if (up < -clamp) up = -clamp;
+                }
+                mid = (gate / (1.0f + expf(-gate))) * up * weights[(uint64_t)tok * n_expert + slot];
+            }
+        }
+        if (lane == 0) smid[local_row] = mid;
+    }
+    __syncthreads();
+
+    uint32_t tid = threadIdx.x;
+    float v = tid < CUDA_QK_K ? smid[tid] : 0.0f;
+    abs_part[tid] = tid < CUDA_QK_K ? fabsf(v) : 0.0f;
+    val_part[tid] = v;
+    __syncthreads();
+    for (uint32_t stride = blockDim.x >> 1; stride > 0; stride >>= 1) {
+        if (tid < stride && abs_part[tid + stride] > abs_part[tid]) {
+            abs_part[tid] = abs_part[tid + stride];
+            val_part[tid] = val_part[tid + stride];
+        }
+        __syncthreads();
+    }
+    const uint32_t midq_blocks = expert_mid_dim / CUDA_QK_K;
+    cuda_block_q8_K *yb = midq_out + (uint64_t)pair * midq_blocks + block;
+    float amax = abs_part[0];
+    if (amax == 0.0f) {
+        if (tid == 0) yb->d = 0.0f;
+        if (tid < CUDA_QK_K) yb->qs[tid] = 0;
+        if (tid < CUDA_QK_K / 16) yb->bsums[tid] = 0;
+        return;
+    }
+    if (tid == 0) {
+        maxv_s = val_part[0];
+        iscale_s = -127.0f / maxv_s;
+    }
+    __syncthreads();
+    if (tid < CUDA_QK_K) {
+        int qv = (int)lrintf(iscale_s * smid[tid]);
+        if (qv > 127) qv = 127;
+        if (qv < -128) qv = -128;
+        yb->qs[tid] = (int8_t)qv;
+    }
+    __syncthreads();
+    if (tid < CUDA_QK_K / 16) {
+        int sum = 0;
+        for (int i = 0; i < 16; i++) sum += yb->qs[tid * 16 + i];
+        yb->bsums[tid] = (int16_t)sum;
+    }
+    if (tid == 0) yb->d = 1.0f / iscale_s;
+}
+
 __global__ static void moe_count_sorted_pairs_kernel(
         uint32_t *counts,
         const int32_t *selected,
@@ -10303,6 +10410,9 @@ static int routed_moe_launch(
         const uint32_t use_decode_lut_gate =
             n_tokens == 1u && xq_blocks <= 16u &&
             getenv("DS4_CUDA_MOE_NO_DECODE_LUT_GATE") == NULL;
+        const uint32_t use_decode_fused_midq =
+            use_decode_lut_gate && !q4k_path && !write_gate_up &&
+            getenv("DS4_CUDA_MOE_NO_FUSE_MIDQ") == NULL;
         const uint32_t gate_row_span =
             getenv("DS4_CUDA_MOE_GATE_ROW512") != NULL ? 512u :
             getenv("DS4_CUDA_MOE_GATE_ROW2048") != NULL ? 2048u : 1024u;
@@ -10521,6 +10631,21 @@ static int routed_moe_launch(
                         n_expert,
                         write_gate_up,
                         clamp);
+                } else if (use_decode_fused_midq) {
+                    dim3 fgrid(midq_blocks, pair_count, 1);
+                    moe_gate_up_midq_decode_lut_qwarp32_kernel<<<fgrid, 256>>>(
+                        midq,
+                        gate_w,
+                        up_w,
+                        xq,
+                        (const int32_t *)selected->ptr,
+                        (const float *)weights->ptr,
+                        gate_expert_bytes,
+                        gate_row_bytes,
+                        xq_blocks,
+                        expert_mid_dim,
+                        n_expert,
+                        clamp);
                 } else if (use_decode_lut_gate) {
                     moe_gate_up_mid_decode_lut_qwarp32_kernel<<<qgrid, 256>>>(
                         (float *)gate->ptr,
@@ -10559,7 +10684,7 @@ static int routed_moe_launch(
             ok = cuda_ok(cudaGetLastError(), "routed_moe gate/up launch");
         }
         if (prof_ev[3]) (void)cudaEventRecord(prof_ev[3], 0);
-        if (ok) {
+        if (ok && !use_decode_fused_midq) {
             dim3 midq_grid(midq_blocks, n_tokens * n_expert, 1);
             q8_K_quantize_kernel<<<midq_grid, 256>>>(midq, (const float *)mid->ptr, expert_mid_dim, n_tokens * n_expert);
             ok = cuda_ok(cudaGetLastError(), "routed_moe mid quantize launch");

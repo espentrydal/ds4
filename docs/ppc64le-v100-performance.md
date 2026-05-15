@@ -79,6 +79,15 @@ regressed. Attention-output follow-ups were also flat: one-token cuBLAS for
 `attn_output_a` and opt-in F16 output-head caching did not produce a meaningful
 speedup.
 
+The routed MoE decode path now fuses the gate/up result directly into Q8_K
+`midq` blocks, avoiding the separate global `mid` materialization and quantize
+kernel. `DS4_CUDA_MOE_NO_FUSE_MIDQ=1` restores the older path. The 96-token
+check measured `12.76 t/s` with the fused default versus `12.47 t/s` with the
+opt-out. A synchronized profile moved `routed_moe` from `0.709 ms/layer` to
+`0.662 ms/layer`, with MoE total moving from `0.632 ms/layer` to
+`0.586 ms/layer`. Other MoE kernel experiments, including constant-memory LUT
+lookup and half/full-warp down kernels, regressed.
+
 Decode stage totals from the synchronized profile:
 
 ```text
