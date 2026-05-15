@@ -80,3 +80,25 @@ compressor_indexer  0.152 ms/layer
 - Existing MoE env toggles: already swept; no better mode found.
 - F16 output split cache: flat.
 - Shared gate/up F16 fallback: slower than the native pair kernel.
+
+## 2026-05-15 Follow-Up Sweep Toward 15 tok/s
+
+After restoring service-path decode to roughly 13 tok/s server-side, another
+dev-node sweep did not find a safe route to 15 tok/s:
+
+- Lowering `DS4_CUDA_Q8_F16_CACHE_RESERVE_MB` to 2048 or 1024 did not improve
+  warm decode. The 1024 MiB reserve triggered CUDA arena allocation failures.
+- Skewing `DS4_CUDA_TENSOR_SPLIT` from `8.2,8.2,8.2,8.2` to
+  `7.0,8.2,9.4,8.2` moved memory pressure to GPU2 and regressed throughput to
+  about 11.5 tok/s server-side.
+- Rechecking `DS4_CUDA_MOE_DIRECT_DOWN_SUM6=1` still regressed.
+- Disabling attention-output F16 caching freed VRAM but did not improve total
+  speed; MoE arena allocation still failed on the dev node.
+- Replacing MoE `expf` with explicit `__expf` did not help; the V100 CUDA build
+  already uses `--use_fast_math`.
+- A decode-only shared-`midq` MoE-down kernel was tested and regressed. The
+  added shared-memory staging overhead outweighed the reduced `midq` reloads.
+
+The latest dev profile still points to routed MoE as the only realistic large
+single-node target, especially the down projection. Reaching 15 tok/s likely
+needs a new down-projection algorithm rather than another environment toggle.
