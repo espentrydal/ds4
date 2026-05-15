@@ -62,6 +62,12 @@ The tested `attn_q_b` cache variant
 the new attention-output default: both the default and q-path variant measured
 `11.62 t/s` in the 48-token check.
 
+The decode q/k/v path now pairs the `attn_q_a` and `attn_kv` Q8 projections
+that share the same normalized input. The old two-projection path is available
+with `DS4_CUDA_DISABLE_QKV_PAIR_PROJ=1`. In the 96-token check, paired measured
+`11.54 t/s` versus `11.50 t/s` for the old path. The synchronized profile
+showed `q_path` moving from `0.355 ms/layer` to `0.334 ms/layer`.
+
 Decode stage totals from the synchronized profile:
 
 ```text
