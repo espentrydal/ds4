@@ -73,6 +73,12 @@ default, with `DS4_CUDA_NO_Q8_F16_GEMV=1` as the opt-out. This moved the
 96-token check from `11.48 t/s` with the opt-out to `12.58 t/s` by cutting the
 profiled `q_path` to `0.187 ms/layer`.
 
+Follow-up MoE checks did not find a better decode mode: write-gate/up,
+direct-sum6, no-LUT gate/up, and a temporary atomic-down experiment all
+regressed. Attention-output follow-ups were also flat: one-token cuBLAS for
+`attn_output_a` and opt-in F16 output-head caching did not produce a meaningful
+speedup.
+
 Decode stage totals from the synchronized profile:
 
 ```text
