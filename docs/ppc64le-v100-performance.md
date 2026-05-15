@@ -19,6 +19,12 @@ protect decode speed. The historical measurements below were mostly taken at
 262K context unless otherwise noted; use them as kernel/runtime comparisons, not
 as a claim that 262K is the preferred production context.
 
+Service-path check on 2026-05-15, after retiring the stale llama.cpp
+`rpc-server` process, measured warm 200-token non-thinking chat requests at
+12.5-12.6 tok/s wall-clock. The server-side decode log reported 12.98-13.05
+tok/s. The stale RPC process had been reserving about 360 MiB on each GPU, which
+was enough to reduce DS4 CUDA cache headroom.
+
 ## Current Profile
 
 Profile command used the same fast CUDA split plus:
