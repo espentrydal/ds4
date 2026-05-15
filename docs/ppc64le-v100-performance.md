@@ -57,6 +57,11 @@ The current attention-output default uses the reference HC expansion path.
 Set `DS4_METAL_ENABLE_ATTN_OUT_HC_FUSION=1` only for comparison with the older
 fused path.
 
+The tested `attn_q_b` cache variant
+`DS4_CUDA_ATTN_Q_B_F32_CACHE=1 DS4_CUDA_NO_ATTN_Q_B_F16_CACHE=1` was flat with
+the new attention-output default: both the default and q-path variant measured
+`11.62 t/s` in the 48-token check.
+
 Decode stage totals from the synchronized profile:
 
 ```text
