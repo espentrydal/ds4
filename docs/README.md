@@ -9,3 +9,9 @@ Human/agent-facing copies should also be present on the GPU nodes at:
 - `ai-smil2:~/ds4/docs/`
 
 The active DeepSeek-V4 Flash runtime branch is `ppc64le` in `~/ds4`.
+
+Files:
+
+- `ppc64le-v100-performance.md`: measured configuration, commits, and profile
+  results.
+- `ppc64le-v100-next-routes.md`: ranked remaining routes for larger speedups.
