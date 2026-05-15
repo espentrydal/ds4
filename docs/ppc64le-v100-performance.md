@@ -68,6 +68,11 @@ with `DS4_CUDA_DISABLE_QKV_PAIR_PROJ=1`. In the 96-token check, paired measured
 `11.54 t/s` versus `11.50 t/s` for the old path. The synchronized profile
 showed `q_path` moving from `0.355 ms/layer` to `0.334 ms/layer`.
 
+One-token decode now uses cached F16/cuBLAS for eligible Q8 projections by
+default, with `DS4_CUDA_NO_Q8_F16_GEMV=1` as the opt-out. This moved the
+96-token check from `11.48 t/s` with the opt-out to `12.58 t/s` by cutting the
+profiled `q_path` to `0.187 ms/layer`.
+
 Decode stage totals from the synchronized profile:
 
 ```text

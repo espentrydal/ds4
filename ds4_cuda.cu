@@ -6093,7 +6093,8 @@ static int cuda_matmul_q8_0_tensor_labeled(ds4_gpu_tensor *out, const void *mode
         out->bytes < n_tok * out_dim * sizeof(float)) return 0;
     const char *wptr = cuda_model_range_ptr(model_map, weight_offset, weight_bytes, "q8_0");
     if (!wptr) return 0;
-    if (g_cublas_ready && n_tok > 1) {
+    const int use_q8_f16_gemv = n_tok == 1 && getenv("DS4_CUDA_NO_Q8_F16_GEMV") == NULL;
+    if (g_cublas_ready && (n_tok > 1 || use_q8_f16_gemv)) {
         const float *w_f32 = cuda_q8_f32_ptr(model_map, weight_offset, weight_bytes, in_dim, out_dim, label);
         if (w_f32) {
             const float alpha = 1.0f;
