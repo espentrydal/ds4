@@ -4782,15 +4782,15 @@ static void append_openai_usage_json(buf *b, const request *r,
     int cache_write_tokens = r ? r->cache_write_tokens : 0;
     cached_tokens = clamp_usage_tokens(cached_tokens, prompt_tokens);
     cache_write_tokens = clamp_usage_tokens(cache_write_tokens, prompt_tokens - cached_tokens);
-    /* Some OpenAI-compatible consumers normalize cache-write tokens by removing
-     * them from cached_tokens when both fields are present.  Include newly
-     * written tokens here so consumers can recover read and write counts. */
-    int reported_cached_tokens = clamp_usage_tokens(cached_tokens + cache_write_tokens, prompt_tokens);
+    /* OpenAI defines cached_tokens as prompt tokens retrieved from cache.
+     * Newly-prefilled tokens are useful to expose, but they are a DS4 extension
+     * and must stay separate so OpenAI-compatible clients do not over-count
+     * cache hits. */
     buf_printf(b,
                "{\"prompt_tokens\":%d,\"completion_tokens\":%d,\"total_tokens\":%d,"
                "\"prompt_tokens_details\":{\"cached_tokens\":%d,\"cache_write_tokens\":%d}}",
                prompt_tokens, completion_tokens, prompt_tokens + completion_tokens,
-               reported_cached_tokens, cache_write_tokens);
+               cached_tokens, cache_write_tokens);
 }
 
 static bool sse_usage_chunk(int fd, const request *r, const char *id,
@@ -6274,6 +6274,20 @@ static const char *responses_status_for_finish(const char *finish) {
     if (finish && !strcmp(finish, "length")) return "incomplete";
     if (finish && !strcmp(finish, "error")) return "failed";
     return "completed";
+}
+
+static void append_responses_usage_json(buf *b, const request *r,
+                                        int input_tokens, int output_tokens) {
+    int cached_tokens = r ? r->cache_read_tokens : 0;
+    int cache_write_tokens = r ? r->cache_write_tokens : 0;
+    cached_tokens = clamp_usage_tokens(cached_tokens, input_tokens);
+    cache_write_tokens = clamp_usage_tokens(cache_write_tokens, input_tokens - cached_tokens);
+    buf_printf(b,
+        "{\"input_tokens\":%d,\"input_tokens_details\":{\"cached_tokens\":%d,\"cache_write_tokens\":%d},"
+        "\"output_tokens\":%d,\"output_tokens_details\":{\"reasoning_tokens\":0},"
+        "\"total_tokens\":%d}",
+        input_tokens, cached_tokens, cache_write_tokens,
+        output_tokens, input_tokens + output_tokens);
 }
 
 static bool responses_sse_completed(int fd, const request *r,
@@ -12600,7 +12614,7 @@ static void test_openai_stream_usage_reports_cache_details(void) {
     TEST_ASSERT(strstr(out, "\"completion_tokens\":2") != NULL);
     TEST_ASSERT(strstr(out, "\"total_tokens\":12") != NULL);
     TEST_ASSERT(strstr(out, "\"prompt_tokens_details\":{") != NULL);
-    TEST_ASSERT(strstr(out, "\"cached_tokens\":10") != NULL);
+    TEST_ASSERT(strstr(out, "\"cached_tokens\":7") != NULL);
     TEST_ASSERT(strstr(out, "\"cache_write_tokens\":3") != NULL);
     TEST_ASSERT(strstr(out, "data: [DONE]") != NULL);
 
@@ -12608,6 +12622,64 @@ static void test_openai_stream_usage_reports_cache_details(void) {
     request_free(&r);
     close(sv[0]);
     close(sv[1]);
+}
+
+static void test_responses_usage_reports_cache_details(void) {
+    request r;
+    request_init(&r, REQ_CHAT, 128);
+    r.api = API_RESPONSES;
+    r.cache_read_tokens = 7;
+    r.cache_write_tokens = 3;
+
+    int sv[2];
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    if (sv[0] < 0 || sv[1] < 0) {
+        request_free(&r);
+        return;
+    }
+
+    TEST_ASSERT(responses_final_response(sv[0], &r, "resp_usage", "OK", NULL, NULL,
+                                         "stop", 10, 2));
+    shutdown(sv[0], SHUT_WR);
+    char *out = read_socket_text(sv[1]);
+
+    TEST_ASSERT(strstr(out, "\"usage\":{\"input_tokens\":10") != NULL);
+    TEST_ASSERT(strstr(out, "\"input_tokens_details\":{") != NULL);
+    TEST_ASSERT(strstr(out, "\"cached_tokens\":7") != NULL);
+    TEST_ASSERT(strstr(out, "\"cache_write_tokens\":3") != NULL);
+    TEST_ASSERT(strstr(out, "\"output_tokens\":2") != NULL);
+    TEST_ASSERT(strstr(out, "\"total_tokens\":12") != NULL);
+
+    free(out);
+    close(sv[0]);
+    close(sv[1]);
+
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    if (sv[0] < 0 || sv[1] < 0) {
+        request_free(&r);
+        return;
+    }
+
+    responses_stream st;
+    responses_stream_init(&r, &st);
+    TEST_ASSERT(responses_sse_completed(sv[0], &r, &st, NULL, NULL,
+                                        "stop", 10, 2, 1234));
+    shutdown(sv[0], SHUT_WR);
+    out = read_socket_text(sv[1]);
+
+    TEST_ASSERT(strstr(out, "\"type\":\"response.completed\"") != NULL);
+    TEST_ASSERT(strstr(out, "\"usage\":{\"input_tokens\":10") != NULL);
+    TEST_ASSERT(strstr(out, "\"input_tokens_details\":{") != NULL);
+    TEST_ASSERT(strstr(out, "\"cached_tokens\":7") != NULL);
+    TEST_ASSERT(strstr(out, "\"cache_write_tokens\":3") != NULL);
+    TEST_ASSERT(strstr(out, "\"output_tokens\":2") != NULL);
+    TEST_ASSERT(strstr(out, "\"total_tokens\":12") != NULL);
+
+    free(out);
+    responses_stream_free(&st);
+    close(sv[0]);
+    close(sv[1]);
+    request_free(&r);
 }
 
 static void test_openai_chat_stream_splits_reasoning_without_tools(void) {
