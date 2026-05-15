@@ -30,6 +30,12 @@ For one-off development runs:
 DS4_CTX=262144 ~/ds4/scripts/server-ds4-flash-v100-1node.sh
 ```
 
+Do not run the deprecated llama.cpp `rpc-server` beside production DS4. On
+2026-05-15 it was still using about 360 MiB per GPU; after stopping it and
+restarting `ds4-server.service`, warm 200-token non-thinking chat requests
+improved from about 11.5-11.7 tok/s wall-clock to 12.5-12.6 tok/s wall-clock,
+with server-side decode logging 12.98-13.05 tok/s.
+
 ### Qwen
 
 - Node: `ai-smil1`
