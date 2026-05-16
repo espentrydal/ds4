@@ -31,9 +31,10 @@ compressor_indexer  0.152 ms/layer
    ```
 
    Simple variants have already regressed: direct sum6, atomic down, no-LUT
-   gate/up, constant-memory LUT lookup, and half/full-warp down kernels. Further
-   gains probably need a new decode-specialized down accumulation strategy that
-   preserves per-expert parallelism while reducing intermediate traffic.
+   gate/up, constant-memory LUT lookup, half/full-warp down kernels, and a
+   5-row x 6-slot direct-sum down kernel. Further gains probably need a new
+   decode-specialized down accumulation strategy that preserves per-expert
+   parallelism while reducing intermediate traffic.
 
 2. Split-output cold-start instrumentation.
 
@@ -135,6 +136,10 @@ dev-node sweep did not find a safe route to 15 tok/s:
   `ncu` hardware counters are blocked by `ERR_NVGPUCTRPERM` on these nodes.
 - A temporary `__forceinline__` test on the Q2 down dot helpers was flat to
   slightly worse (`down=0.298-0.300 ms`) and was reverted.
+- A temporary 5-row x 6-slot direct-sum down kernel kept the six experts
+  parallel and removed most explicit sum time (`sum 0.009 -> 0.002 ms`), but
+  increased down time (`down 0.299 -> 0.320 ms`) and total MoE time
+  (`0.590 -> 0.599 ms`), so it was reverted.
 
 The latest dev profile still points to routed MoE as the realistic large
 single-node target. Reaching 15 tok/s likely needs a new MoE down projection
