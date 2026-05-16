@@ -313,3 +313,38 @@ Additional topology and projection checks also did not produce a route:
 - `DS4_CUDA_F16_PAIR_MATMUL=1` measured `11.76 t/s`, far below the current
   default. The existing two one-token F16/cuBLAS calls are faster than the
   ordered-chunks F16 pair kernel on V100.
+
+## 2026-05-16 Luce Megakernel Takeaways
+
+Reference: <https://github.com/Luce-Org/lucebox-hub/tree/main/megakernel>
+
+The Luce megakernel work is useful as direction, but not as a directly portable
+implementation. Their kernel is a hand-written, batch-1, single-model,
+single-architecture path for Qwen 3.5-0.8B, using BF16/FP16 weights and no GGUF
+quantization. The README also notes that the approach is a research
+proof-of-concept, and that benefits shrink as model size grows and compute
+begins to dominate. DS4 on this setup is a much larger 43-layer routed-MoE,
+quantized, multi-GPU decode path, so a whole-model megakernel is not a realistic
+near-term route.
+
+The practical lessons for this V100 DS4 branch are still relevant:
+
+1. Minimize CPU launch and layer-boundary overhead where the profile shows many
+   small pure-kernel steps. We already tried cuBLAS graph capture and it failed
+   on this CUDA/cuBLAS stack, but pure-kernel islands remain plausible.
+2. Prefer scoped persistent/fused islands over a full forward-pass megakernel.
+   Candidate islands are the compressor/update path, attention-output A/B/HC
+   tail if it can avoid the older regressing fusion shape, and parts of routed
+   MoE that are not already fused.
+3. Treat register pressure as a first-class constraint. This matches our V100
+   results: `-Xptxas=-maxrregcount=64` helped, 1024-thread gate/up regressed,
+   and the 128-row MoE down shape is already near a launch-resource boundary.
+4. Avoid grid-wide synchronization inside tight recurrence/token loops. If a
+   future persistent island uses cooperative groups, synchronize at coarse
+   phase boundaries and prove it with correctness comparisons plus watchdog-safe
+   tests.
+
+For the 18 tok/s target, the takeaway is that launch overhead may still matter,
+but the most likely useful version is a small number of DS4-specific persistent
+or fused islands, not a generic vLLM-style scheduler and not a monolithic
+whole-model rewrite.
