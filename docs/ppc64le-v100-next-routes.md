@@ -3,20 +3,20 @@
 Current best verified one-node decode result:
 
 ```text
-ds4: prefill: 0.15 t/s, generation: 13.43 t/s
+ds4: prefill: 0.15 t/s, generation: 14.03 t/s
 ```
 
-Getting to 15 tok/s requires roughly a 10-11 percent token-latency reduction
+Getting to 15 tok/s requires roughly a 6-7 percent token-latency reduction
 from the current path. The latest synchronized profile still has most remaining
 time inside the layer loop:
 
 ```text
-routed_moe          0.662 ms/layer
-attn_output         0.280 ms/layer
-q_path              0.187 ms/layer
+routed_moe          0.579 ms/layer
+attn_output         0.278 ms/layer
+q_path              0.188 ms/layer
 compressor_indexer  0.153 ms/layer
-shared_gate_up      0.104 ms/layer
-shared_down         0.068 ms/layer
+shared_gate_up      0.102 ms/layer
+shared_down         0.069 ms/layer
 ```
 
 ## Most Realistic Routes
@@ -51,23 +51,33 @@ shared_down         0.068 ms/layer
    The `cuda-v100` target applies the 64-register cap through
    `NVCC_PTXAS_FLAGS`; other CUDA targets remain unchanged.
 
-2. Routed-MoE down/gate-up kernel work.
+2. Keep the 64-row MoE decode down kernel.
 
-   This remains the largest bucket. The fused midq kernel helped, but MoE is
-   still dominated by down and gate/up work:
+   The default decode down path now processes 64 output rows per block with 512
+   threads. This moved the profiled MoE down bucket from about
+   `0.318 ms/layer` to `0.236 ms/layer` and reduced routed MoE from about
+   `0.662 ms/layer` to `0.579 ms/layer`. Direct 200-token checks measured
+   `13.96 t/s` on ai-smil1 and `14.03 t/s` on ai-smil2; a 500-token ai-smil2
+   run measured `14.01 t/s`. The old 32-row shape remains available with
+   `DS4_CUDA_MOE_DOWN_ROWS32=1` for comparison.
+
+3. Routed-MoE gate-up kernel work.
+
+   MoE remains the largest bucket. After the 64-row down change, gate/up and
+   down are roughly tied:
 
    ```text
-   down    0.318 ms/layer
-   gateup  0.237 ms/layer
+   down    0.236 ms/layer
+   gateup  0.236 ms/layer
    ```
 
-   Simple variants have already regressed: direct sum6, atomic down, no-LUT
+   Simple earlier variants already regressed: direct sum6, atomic down, no-LUT
    gate/up, constant-memory LUT lookup, half/full-warp down kernels, and a
-   5-row x 6-slot direct-sum down kernel. Further gains probably need a new
-   decode-specialized down accumulation strategy that preserves per-expert
-   parallelism while reducing intermediate traffic.
+   5-row x 6-slot direct-sum down kernel. Further gains probably need work on
+   the fused gate/up+midq kernel, or another down shape that beats the new
+   64-row default.
 
-3. Split-output cold-start instrumentation.
+4. Split-output cold-start instrumentation.
 
    The stage profile is layer-focused, so an opt-in `DS4_OUTPUT_HEAD_PROFILE=1`
    profiler was added for the final output head. It synchronizes before the
@@ -88,7 +98,7 @@ shared_down         0.068 ms/layer
    segments, but it regressed on V100. Output logits are therefore not a
    meaningful warm-decode route toward 15 tok/s.
 
-4. Attention-output projection fusion.
+5. Attention-output projection fusion.
 
    The current reference attention-output path is faster than the fused HC path,
    but `attn_output` is still the second-largest layer bucket. One-token cuBLAS
@@ -105,7 +115,7 @@ shared_down         0.068 ms/layer
    existing `DS4_METAL_ENABLE_ATTN_OUT_HC_FUSION=1` path was rechecked on the
    current build and still regressed (`12.64 -> 12.19 t/s` direct decode).
 
-5. Compressor/indexer path.
+6. Compressor/indexer path.
 
    `compressor_indexer` is smaller than MoE and attention output, but still large
    enough to matter. The current short-prompt decode profile does not exercise
@@ -118,14 +128,14 @@ shared_down         0.068 ms/layer
    more relevant to long-context decode than to the current short-context speed
    target.
 
-6. Pure-kernel CUDA graph islands.
+7. Pure-kernel CUDA graph islands.
 
    CUDA graph capture around cuBLAS failed on this stack. Graph work may still
    help for pure-kernel islands, but the current hot path now includes more
    cuBLAS GEMV, so graphing is less likely to be the biggest win unless scoped
    to non-cuBLAS groups.
 
-7. Two-node execution.
+8. Two-node execution.
 
    Cross-node tensor parallelism over InfiniBand is unlikely to improve
    single-stream decode latency. A layer-pipeline split could be explored, but
@@ -194,10 +204,16 @@ dev-node sweep did not find a safe route to 15 tok/s:
 - ptxas verbose output showed no spills in the active one-token MoE decode
   kernels under the 64-register cap. Spilling exists in some batch/tile MoE
   kernels, but those are not the current single-token decode bottleneck.
+- A 64-row/512-thread MoE decode down shape produced the next real gain and is
+  now the default. The 16-row shape regressed to `12.90 t/s`; the 64-row shape
+  repeated at `13.96-14.03 t/s` on 200-token checks and `14.01 t/s` on a
+  500-token ai-smil2 check. A same-binary 32-token output comparison with the
+  old path matched exactly.
 
 The latest dev profile still points to routed MoE as the realistic large
-single-node target. Reaching 15 tok/s likely needs a new MoE down projection
-algorithm rather than another simple environment toggle or build flag.
+single-node target. Reaching 15 tok/s likely needs another MoE or
+attention-output gain rather than another simple environment toggle or build
+flag.
 
 ## 2026-05-16 Indexer Check
 
@@ -208,10 +224,10 @@ after the ratio-4 compressed row count exceeds 512. The layer-level profile stil
 shows `compressor_indexer` around `0.151-0.152 ms/layer`, but for the current
 benchmark that should be read as compressor/update overhead, not top-k overhead.
 
-This keeps the 15 tok/s priority order mostly unchanged after the V100 register
-cap:
+After the V100 register cap and 64-row MoE down change, the 15 tok/s priority
+order is:
 
-1. new routed-MoE down/gate-up algorithm,
+1. fused MoE gate/up+midq work, plus any further down shape that beats rows64,
 2. attention-output projection fusion,
 3. compressor/cache-update fusion as a secondary route,
 4. long-context indexer top-k work only if long-context decode becomes the main
