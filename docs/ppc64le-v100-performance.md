@@ -143,6 +143,13 @@ path almost evenly between `attention_output_a` and `attention_output_b`:
 direct generation did not improve. Treat this profiler as a routing diagnostic,
 not as a production speed measurement.
 
+The older fused attention-output/HC path was also rechecked with
+`DS4_METAL_ENABLE_ATTN_OUT_HC_FUSION=1` on the current build. It is still not a
+production route: direct 200-token generation fell to `12.19 t/s` from the
+current `12.64 t/s` default. The synchronized profile moved `attn_hc_post` down
+to `0.009 ms/layer`, but pushed `attn_output` up to `0.372 ms/layer`, so the
+combined A/B/HC pipeline regressed.
+
 Output-head follow-up timings from direct CLI runs with `DS4_OUTPUT_HEAD_PROFILE=1`:
 
 ```text

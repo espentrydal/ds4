@@ -70,7 +70,9 @@ compressor_indexer  0.152 ms/layer
    `DS4_CUDA_ATTENTION_OUTPUT_PROFILE=1` showed the default path split almost
    evenly between `attention_output_a` (`0.142 ms/layer`) and
    `attention_output_b` (`0.137 ms/layer`), so meaningful work here probably
-   needs to reduce the whole A/B/HC pipeline rather than one subprojection.
+   needs to reduce the whole A/B/HC pipeline rather than one subprojection. The
+   existing `DS4_METAL_ENABLE_ATTN_OUT_HC_FUSION=1` path was rechecked on the
+   current build and still regressed (`12.64 -> 12.19 t/s` direct decode).
 
 4. Compressor/indexer path.
 
