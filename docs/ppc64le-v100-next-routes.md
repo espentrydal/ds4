@@ -368,6 +368,12 @@ Additional topology and projection checks also did not produce a route:
   `DS4_CUDA_NO_INDEXER_DIRECT_ONE=1`, `DS4_CUDA_NO_TOPK1024=1`, and
   `DS4_CUDA_NO_TOPK2048=1` all preserved the deterministic 64-token output hash,
   but measured only `14.61`, `14.62`, and `14.61 t/s` respectively.
+- Moving the CUDA primary device for shared scratch allocation did not help.
+  With the normal layer split still set to `DS4_CUDA_DEVICES=0,1,2,3`,
+  `DS4_CUDA_DEVICE=1` preserved the deterministic 64-token output hash but
+  measured `14.48 t/s`, and `DS4_CUDA_DEVICE=2` measured `14.36 t/s`.
+  A real per-device scratch-buffer design is still a possible larger route, but
+  simply changing the primary device is not.
 
 ## 2026-05-16 Luce Megakernel Takeaways
 
