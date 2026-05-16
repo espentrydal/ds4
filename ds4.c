@@ -9843,8 +9843,25 @@ static bool metal_graph_encode_output_head(
         const ds4_weights     *weights,
         uint64_t               vocab_dim) {
     if (ds4_gpu_use_primary_device() == 0) return false;
+    const bool profile = getenv("DS4_OUTPUT_HEAD_PROFILE") != NULL;
+    bool ok = true;
+    if (profile) ok = ds4_gpu_synchronize() != 0;
+    const double profile_start = profile ? now_sec() : 0.0;
+    double profile_t0 = profile_start;
+#define DS4_PROFILE_OUTPUT_HEAD_STAGE(name) do { \
+        if (ok && profile) { \
+            ok = ds4_gpu_synchronize() != 0; \
+            const double profile_now = now_sec(); \
+            fprintf(stderr, \
+                    "ds4: output head stage %s=%.3f ms\n", \
+                    (name), \
+                    (profile_now - profile_t0) * 1000.0); \
+            profile_t0 = profile_now; \
+        } \
+    } while (0)
     const uint64_t hc_dim = (uint64_t)DS4_N_HC * DS4_N_EMBD;
-    bool ok = ds4_gpu_rms_norm_plain_tensor(g->flat_hc, g->cur_hc, (uint32_t)hc_dim, DS4_RMS_EPS) != 0;
+    if (ok) ok = ds4_gpu_rms_norm_plain_tensor(g->flat_hc, g->cur_hc, (uint32_t)hc_dim, DS4_RMS_EPS) != 0;
+    DS4_PROFILE_OUTPUT_HEAD_STAGE("hc_rms");
     if (ok) ok = ds4_gpu_matmul_f16_tensor(g->output_pre,
                                              model->map,
                                              model->size,
@@ -9853,6 +9870,7 @@ static bool metal_graph_encode_output_head(
                                              DS4_N_HC,
                                              g->flat_hc,
                                              1) != 0;
+    DS4_PROFILE_OUTPUT_HEAD_STAGE("hc_pre");
     if (ok) {
         metal_graph_debug_dump_tensor("result_hc_pre", g->output_pre, DS4_N_HC, DS4_N_LAYER, 0);
     }
@@ -9864,6 +9882,7 @@ static bool metal_graph_encode_output_head(
                                                     weights->output_hc_base->abs_offset,
                                                     DS4_N_HC,
                                                     DS4_HC_EPS) != 0;
+    DS4_PROFILE_OUTPUT_HEAD_STAGE("hc_weights");
     if (ok) {
         metal_graph_debug_dump_tensor("result_hc_weights", g->output_weights, DS4_N_HC, DS4_N_LAYER, 0);
     }
@@ -9872,6 +9891,7 @@ static bool metal_graph_encode_output_head(
                                                   g->output_weights,
                                                   DS4_N_EMBD,
                                                   DS4_N_HC) != 0;
+    DS4_PROFILE_OUTPUT_HEAD_STAGE("hc_sum");
     if (ok) {
         metal_graph_debug_dump_tensor("result_hc", g->output_embd, DS4_N_EMBD, DS4_N_LAYER, 0);
     }
@@ -9882,6 +9902,7 @@ static bool metal_graph_encode_output_head(
                                                   weights->output_norm->abs_offset,
                                                   DS4_N_EMBD,
                                                   DS4_RMS_EPS) != 0;
+    DS4_PROFILE_OUTPUT_HEAD_STAGE("output_norm");
     if (ok) {
         metal_graph_debug_dump_tensor("result_norm", g->output_norm, DS4_N_EMBD, DS4_N_LAYER, 0);
     }
@@ -9903,9 +9924,17 @@ static bool metal_graph_encode_output_head(
                                         g->output_norm,
                                         1) != 0;
     }
+    DS4_PROFILE_OUTPUT_HEAD_STAGE("logits");
     if (ok) {
         metal_graph_debug_dump_tensor("result_output", g->logits, vocab_dim, DS4_N_LAYER, 0);
     }
+    if (profile) {
+        const double profile_done = now_sec();
+        fprintf(stderr,
+                "ds4: output head total=%.3f ms\n",
+                (profile_done - profile_start) * 1000.0);
+    }
+#undef DS4_PROFILE_OUTPUT_HEAD_STAGE
     return ok;
 }
 
