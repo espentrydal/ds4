@@ -41,6 +41,11 @@ shared-down/HC measured about `shared_down=0.175 ms/layer` plus
 `shared_down=0.068 ms/layer` plus `ffn_hc_post=0.064 ms/layer`. The separate
 path is faster overall.
 
+The same setting was verified through `ds4-server.service` on ai-smil2. The
+systemd process environment included `DS4_METAL_DISABLE_SHARED_DOWN_HC_FUSION=1`;
+a warm 128K-context 200-token request logged `13.28 t/s` for the first chunk and
+`12.99 t/s` average over 200 generated tokens.
+
 The adjacent shared gate/up/SwiGLU fusion should stay enabled. Testing
 `DS4_METAL_DISABLE_SHARED_GATE_UP_SWIGLU_FUSION=1` with the fast shared-down
 setting produced only noise-level direct throughput (`13.14 t/s` on ai-smil2)
