@@ -9,6 +9,7 @@ DS4_CUDA_DEVICES=0,1,2,3
 DS4_CUDA_TENSOR_SPLIT=8.2,8.2,8.2,8.2
 DS4_CUDA_WEIGHT_ARENA_CHUNK_MB=512
 DS4_METAL_DISABLE_SHARED_DOWN_HC_FUSION=1
+make cuda-v100  # includes -Xptxas=-maxrregcount=64
 ```
 
 Use `scripts/server-ds4-flash-v100-1node.sh` for OpenAI/Anthropic-compatible
@@ -45,6 +46,28 @@ The same setting was verified through `ds4-server.service` on ai-smil2. The
 systemd process environment included `DS4_METAL_DISABLE_SHARED_DOWN_HC_FUSION=1`;
 a warm 128K-context 200-token request logged `13.28 t/s` for the first chunk and
 `12.99 t/s` average over 200 generated tokens.
+
+A 2026-05-16 V100 build-flag sweep found a second simple decode gain by capping
+ptxas register allocation for `make cuda-v100`. The tested direct 200-token
+decode results were:
+
+```text
+maxrregcount=56  13.26 t/s
+maxrregcount=64  13.40-13.43 t/s
+maxrregcount=72  13.37 t/s
+maxrregcount=80  13.33 t/s
+maxrregcount=96  12.86 t/s
+```
+
+The V100 target now uses `NVCC_PTXAS_FLAGS=-Xptxas=-maxrregcount=64`. This is a
+V100-specific occupancy/register-pressure setting; other CUDA targets keep the
+plain NVCC flags unless overridden.
+
+The normal `make cuda-v100` target was rebuilt after the Makefile change and
+rechecked at `13.40 t/s` on ai-smil1 and `13.43 t/s` on ai-smil2. The capped
+profile preserved the same broad hotspot order: `routed_moe=0.662 ms/layer`,
+`attn_output=0.280 ms/layer`, `q_path=0.187 ms/layer`, and
+`compressor_indexer=0.153 ms/layer`.
 
 The adjacent shared gate/up/SwiGLU fusion should stay enabled. Testing
 `DS4_METAL_DISABLE_SHARED_GATE_UP_SWIGLU_FUSION=1` with the fast shared-down

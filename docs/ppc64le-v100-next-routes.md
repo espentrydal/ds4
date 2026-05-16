@@ -3,19 +3,19 @@
 Current best verified one-node decode result:
 
 ```text
-ds4: prefill: 0.15 t/s, generation: 13.20 t/s
+ds4: prefill: 0.15 t/s, generation: 13.43 t/s
 ```
 
-Getting to 15 tok/s requires roughly a 12 percent token-latency reduction from
-the current path. The latest synchronized profile still has most remaining time
-inside the layer loop:
+Getting to 15 tok/s requires roughly a 10-11 percent token-latency reduction
+from the current path. The latest synchronized profile still has most remaining
+time inside the layer loop:
 
 ```text
-routed_moe          0.660 ms/layer
-attn_output         0.278 ms/layer
-q_path              0.186 ms/layer
-compressor_indexer  0.151 ms/layer
-shared_gate_up      0.100 ms/layer
+routed_moe          0.662 ms/layer
+attn_output         0.280 ms/layer
+q_path              0.187 ms/layer
+compressor_indexer  0.153 ms/layer
+shared_gate_up      0.104 ms/layer
 shared_down         0.068 ms/layer
 ```
 
@@ -38,14 +38,23 @@ shared_down         0.068 ms/layer
    `DS4_CUDA_DISABLE_QKV_PAIR_PROJ=1` opt-out raised `q_path` from
    `0.186 -> 0.253 ms/layer` and dropped direct decode to `12.89 t/s`.
 
-1. Routed-MoE down/gate-up kernel work.
+1. Keep the V100 register cap in the `cuda-v100` build.
+
+   A 2026-05-16 compile-flag sweep found that ptxas register pressure matters
+   on V100. `-Xptxas=-maxrregcount=64` raised direct 200-token decode to
+   `13.40-13.43 t/s`. Nearby caps were weaker: 56 regs measured `13.26 t/s`,
+   72 regs `13.37 t/s`, 80 regs `13.33 t/s`, and 96 regs regressed to
+   `12.86 t/s`. The `cuda-v100` target now applies the 64-register cap through
+   `NVCC_PTXAS_FLAGS`; other CUDA targets remain unchanged.
+
+2. Routed-MoE down/gate-up kernel work.
 
    This remains the largest bucket. The fused midq kernel helped, but MoE is
    still dominated by down and gate/up work:
 
    ```text
-   down    0.298 ms/layer
-   gateup  0.258 ms/layer
+   down    0.318 ms/layer
+   gateup  0.237 ms/layer
    ```
 
    Simple variants have already regressed: direct sum6, atomic down, no-LUT
@@ -54,7 +63,7 @@ shared_down         0.068 ms/layer
    decode-specialized down accumulation strategy that preserves per-expert
    parallelism while reducing intermediate traffic.
 
-2. Split-output cold-start instrumentation.
+3. Split-output cold-start instrumentation.
 
    The stage profile is layer-focused, so an opt-in `DS4_OUTPUT_HEAD_PROFILE=1`
    profiler was added for the final output head. It synchronizes before the
@@ -75,7 +84,7 @@ shared_down         0.068 ms/layer
    segments, but it regressed on V100. Output logits are therefore not a
    meaningful warm-decode route toward 15 tok/s.
 
-3. Attention-output projection fusion.
+4. Attention-output projection fusion.
 
    The current reference attention-output path is faster than the fused HC path,
    but `attn_output` is still the second-largest layer bucket. One-token cuBLAS
@@ -92,7 +101,7 @@ shared_down         0.068 ms/layer
    existing `DS4_METAL_ENABLE_ATTN_OUT_HC_FUSION=1` path was rechecked on the
    current build and still regressed (`12.64 -> 12.19 t/s` direct decode).
 
-4. Compressor/indexer path.
+5. Compressor/indexer path.
 
    `compressor_indexer` is smaller than MoE and attention output, but still large
    enough to matter. The current short-prompt decode profile does not exercise
@@ -105,14 +114,14 @@ shared_down         0.068 ms/layer
    more relevant to long-context decode than to the current short-context speed
    target.
 
-5. Pure-kernel CUDA graph islands.
+6. Pure-kernel CUDA graph islands.
 
    CUDA graph capture around cuBLAS failed on this stack. Graph work may still
    help for pure-kernel islands, but the current hot path now includes more
    cuBLAS GEMV, so graphing is less likely to be the biggest win unless scoped
    to non-cuBLAS groups.
 
-6. Two-node execution.
+7. Two-node execution.
 
    Cross-node tensor parallelism over InfiniBand is unlikely to improve
    single-stream decode latency. A layer-pipeline split could be explored, but
@@ -170,10 +179,13 @@ dev-node sweep did not find a safe route to 15 tok/s:
   parallel and removed most explicit sum time (`sum 0.009 -> 0.002 ms`), but
   increased down time (`down 0.299 -> 0.320 ms`) and total MoE time
   (`0.590 -> 0.599 ms`), so it was reverted.
+- A V100 ptxas register-cap sweep did find a small build-level win:
+  `maxrregcount=64` measured `13.40-13.43 t/s` and is now the `cuda-v100`
+  default. Higher and lower caps were weaker.
 
 The latest dev profile still points to routed MoE as the realistic large
 single-node target. Reaching 15 tok/s likely needs a new MoE down projection
-algorithm rather than another environment toggle.
+algorithm rather than another simple environment toggle or build flag.
 
 ## 2026-05-16 Indexer Check
 
@@ -184,7 +196,8 @@ after the ratio-4 compressed row count exceeds 512. The layer-level profile stil
 shows `compressor_indexer` around `0.151-0.152 ms/layer`, but for the current
 benchmark that should be read as compressor/update overhead, not top-k overhead.
 
-This keeps the 15 tok/s priority order unchanged:
+This keeps the 15 tok/s priority order mostly unchanged after the V100 register
+cap:
 
 1. new routed-MoE down/gate-up algorithm,
 2. attention-output projection fusion,
