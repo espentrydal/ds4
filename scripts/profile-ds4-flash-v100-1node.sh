@@ -26,6 +26,8 @@ printf "\ndecode_stage_total_ms count avg_ms\n"
 awk '/metal layer stage part=decode/ {for(i=1;i<=NF;i++){if($i ~ /=/){split($i,a,"="); key=a[1]; val=a[2]; if(key!="part"&&key!="layer"&&key!="pos"&&key!="tokens"){sum[key]+=val; cnt[key]++}}}} END{for(k in sum) printf "%s %.3f %d %.3f\n", k, sum[k], cnt[k], sum[k]/cnt[k]}' "$ERR" | sort -k2,2nr
 printf "\nmoe_total_ms count avg_ms\n"
 awk '/CUDA MoE profile tokens=1/ {for(i=1;i<=NF;i++){if($i ~ /=/){split($i,a,"="); key=a[1]; val=a[2]; if(key!="tokens"&&key!="pairs"){sum[key]+=val; cnt[key]++}}}} END{for(k in sum) printf "%s %.3f %d %.3f\n", k, sum[k], cnt[k], sum[k]/cnt[k]}' "$ERR" | sort -k2,2nr
+printf "\nindexer_stage_total_ms count avg_ms\n"
+awk '/metal indexer stage/ {for(i=1;i<=NF;i++){if($i ~ /=/){split($i,a,"="); key=a[1]; val=a[2]; if(key!="layer"&&key!="pos"&&key!="tokens"&&key!="comp"){sum[key]+=val; cnt[key]++}}}} END{for(k in sum) printf "%s %.3f %d %.3f\n", k, sum[k], cnt[k], sum[k]/cnt[k]}' "$ERR" | sort -k2,2nr
 printf "\ntoken_tail\n"
 grep "metal graph token" "$ERR" | tail -12 || true
 printf "\nalloc_failures\n"
