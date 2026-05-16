@@ -6254,8 +6254,11 @@ extern "C" int ds4_gpu_matmul_q8_0_split_output_tensor(
     g_active_device = primary;
     if (!cuda_ok(cudaDeviceSynchronize(), "split output primary synchronize")) return 0;
 
+    const int profile = getenv("DS4_CUDA_SPLIT_OUTPUT_PROFILE") != NULL;
+    const double profile_start = profile ? cuda_wall_sec() : 0.0;
     const uint64_t x_bytes = in_dim * sizeof(float);
     for (int i = 0; i < ndev; i++) {
+        const double profile_dev_start = profile ? cuda_wall_sec() : 0.0;
         const int dev = devices[i];
         uint64_t start = (out_dim * (uint64_t)i) / (uint64_t)ndev;
         uint64_t end = (out_dim * (uint64_t)(i + 1)) / (uint64_t)ndev;
@@ -6304,15 +6307,39 @@ extern "C" int ds4_gpu_matmul_q8_0_split_output_tensor(
             (void)cudaGetLastError();
             return 0;
         }
+        if (profile) {
+            const double profile_dev_done = cuda_wall_sec();
+            fprintf(stderr,
+                    "ds4: CUDA split output enqueue dev=%d rows=%llu..%llu ms=%.3f\n",
+                    dev,
+                    (unsigned long long)start,
+                    (unsigned long long)end,
+                    (profile_dev_done - profile_dev_start) * 1000.0);
+        }
     }
 
     for (int i = 0; i < ndev; i++) {
         const int dev = devices[i];
+        const double profile_sync_start = profile ? cuda_wall_sec() : 0.0;
         if (!cuda_ok(cudaSetDevice(dev), "split output sync set device")) return 0;
         if (!cuda_ok(cudaDeviceSynchronize(), "split output synchronize")) return 0;
+        if (profile) {
+            const double profile_sync_done = cuda_wall_sec();
+            fprintf(stderr,
+                    "ds4: CUDA split output sync dev=%d ms=%.3f\n",
+                    dev,
+                    (profile_sync_done - profile_sync_start) * 1000.0);
+        }
     }
     if (!cuda_ok(cudaSetDevice(primary), "split output restore primary")) return 0;
     g_active_device = primary;
+    if (profile) {
+        const double profile_done = cuda_wall_sec();
+        fprintf(stderr,
+                "ds4: CUDA split output total devices=%d ms=%.3f\n",
+                ndev,
+                (profile_done - profile_start) * 1000.0);
+    }
     return 1;
 }
 

@@ -33,11 +33,11 @@ regressed.
 
 A 2026-05-16 follow-up added `DS4_OUTPUT_HEAD_PROFILE=1` to isolate the final
 output head. This profiler synchronizes before the output head and between
-substeps, so it is for diagnosis rather than speed measurement. It showed final
-output logits at roughly `67 ms/token`, making output logits a real target.
-However, disabling split output was slightly slower, and the opt-in
-`DS4_CUDA_OUTPUT_F16_CACHE=1` path did not help even when a lower cache reserve
-allowed all four output split segments to be cached as F16.
+substeps, so it is for diagnosis rather than speed measurement. A later
+`DS4_CUDA_SPLIT_OUTPUT_PROFILE=1` check showed that the earlier `~67 ms/token`
+output-logits average was dominated by the first lazy output-weight cache during
+prefill. Warm generated-token split output is only about `1.35 ms`, so output
+logits are not a meaningful route to 15 tok/s.
 
 ## Current Profile
 
@@ -107,18 +107,19 @@ speedup.
 Output-head follow-up timings from direct CLI runs with `DS4_OUTPUT_HEAD_PROFILE=1`:
 
 ```text
-split output default:   generation 13.35 t/s, logits 67.256 ms/token
-split output disabled:  generation 13.30 t/s, logits 68.046 ms/token
-output F16 cache:       generation 13.29 t/s, logits 69.181 ms/token
-half-warp output Q8:    generation 13.39 t/s, logits 67.024 ms/token
-same-node baseline:     generation 13.32 t/s, logits 67.099 ms/token
+first split-output call:  1052.8 ms total, about 263 ms enqueue per device
+warm split-output call:      1.35 ms total, about 1.14 ms waiting on dev0
+output F16 cache:        generation 13.29 t/s, cold-inclusive logits 69.181 ms/token
+half-warp output Q8:     generation 13.39 t/s, cold-inclusive logits 67.024 ms/token
+full-block DP4A output:  generation 13.36 t/s, cold-inclusive logits 67.092 ms/token
 ```
 
 The F16 output cache run used `DS4_CUDA_OUTPUT_F16_CACHE=1` and
 `DS4_CUDA_Q8_F16_CACHE_RESERVE_MB=512`; logs confirmed four cached
 `252.50 MiB` output split segments. It still regressed, so this is not a
 promising production default. A temporary half-warp output Q8 kernel was flat
-within measurement noise and was reverted.
+within measurement noise and was reverted. A temporary full-block DP4A output
+Q8 specialization was also flat and was reverted.
 
 The routed MoE decode path now fuses the gate/up result directly into Q8_K
 `midq` blocks, avoiding the separate global `mid` materialization and quantize
