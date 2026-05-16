@@ -359,6 +359,11 @@ Additional topology and projection checks also did not produce a route:
 - `DS4_CUDA_F16_PAIR_MATMUL=1` measured `11.76 t/s`, far below the current
   default. The existing two one-token F16/cuBLAS calls are faster than the
   ordered-chunks F16 pair kernel on V100.
+- A temporary qwarp64 MoE gate/up reduction change started the Q8 max reduction
+  at `CUDA_QK_K >> 1` instead of `blockDim.x >> 1`, skipping the empty
+  256-thread half of the 512-thread block. It preserved the deterministic output
+  hashes for 64-token and 200-token checks, but measured only `14.65 t/s` and
+  `14.55 t/s`, so the source was reverted.
 
 ## 2026-05-16 Luce Megakernel Takeaways
 
