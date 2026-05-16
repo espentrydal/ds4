@@ -315,6 +315,11 @@ Additional topology and projection checks also did not produce a route:
   cross-device handoff in a direct ai-smil1 200-token check (`14.60 t/s` for
   both modes). The device-switch synchronization mode should stay on the default
   event path.
+- A small ratio-4 compressor shift cleanup removed redundant stores back into
+  the already-current half of the compressor state. It matched output exactly
+  against the previous binary on a 64-token check and measured `14.62 t/s` on a
+  200-token ai-smil1 run, so it is kept as a cleanup but not counted as a
+  meaningful route toward 18 tok/s.
 - `DS4_METAL_DISABLE_COMPRESSOR_PAIR_PROJ=1` measured `15.03 t/s`, below the
   current default band, so compressor pair projection should stay enabled.
 - `DS4_CUDA_F16_PAIR_MATMUL=1` measured `11.76 t/s`, far below the current

@@ -218,6 +218,12 @@ records an event on the previous GPU stream and waits on it from the next GPU;
 each handoff. In a direct ai-smil1 200-token comparison both measured
 `14.60 t/s`, so the default event-based handoff remains the right setting.
 
+The ratio-4 compressor shift kernel was trimmed to stop writing the second half
+of the compressor state back to itself after copying it into the first half. A
+64-token comparison against the previous binary matched exactly (`cmp` exit 0).
+The 200-token ai-smil1 check measured `14.62 t/s`, so this is a low-risk cleanup
+with no meaningful measured speed gain.
+
 Two projection toggles were checked after the post-upstream baseline and should
 remain off. `DS4_METAL_DISABLE_COMPRESSOR_PAIR_PROJ=1` measured `15.03 t/s`,
 below the default band. `DS4_CUDA_F16_PAIR_MATMUL=1` measured `11.76 t/s`, so
