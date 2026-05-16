@@ -67,9 +67,15 @@ compressor_indexer  0.152 ms/layer
 4. Compressor/indexer path.
 
    `compressor_indexer` is smaller than MoE and attention output, but still large
-   enough to matter. Any change here must preserve the compressed-attention
-   selection behavior. Candidate work is reducing top-k/indexer overhead or
-   fusing small compressor/indexer kernels.
+   enough to matter. The current short-prompt decode profile does not exercise
+   top-k selection yet: `DS4_N_INDEXER_TOP_K` is 512, and ratio-4 layers need
+   roughly 2048 tokens before `n_comp > top_k`. In the current 12.6-13 tok/s
+   benchmark, this bucket is therefore mostly compressor projection/update and
+   compressed-cache maintenance, not score/top-k. Any change here must preserve
+   the compressed-attention selection behavior. Candidate work is fusing small
+   compressor kernels or reducing cache-update traffic; top-k/indexer scoring is
+   more relevant to long-context decode than to the current short-context speed
+   target.
 
 5. Pure-kernel CUDA graph islands.
 
@@ -133,3 +139,20 @@ dev-node sweep did not find a safe route to 15 tok/s:
 The latest dev profile still points to routed MoE as the realistic large
 single-node target. Reaching 15 tok/s likely needs a new MoE down projection
 algorithm rather than another environment toggle.
+
+## 2026-05-16 Indexer Check
+
+`DS4_METAL_INDEXER_STAGE_PROFILE=1` was rechecked after the MoE/output sweeps.
+The script now aggregates `metal indexer stage` lines when they appear, but the
+standard short decode profile emits none because the top-k path only starts
+after the ratio-4 compressed row count exceeds 512. The layer-level profile still
+shows `compressor_indexer` around `0.151-0.152 ms/layer`, but for the current
+benchmark that should be read as compressor/update overhead, not top-k overhead.
+
+This keeps the 15 tok/s priority order unchanged:
+
+1. new routed-MoE down/gate-up algorithm,
+2. attention-output projection fusion,
+3. compressor/cache-update fusion as a secondary route,
+4. long-context indexer top-k work only if long-context decode becomes the main
+   target.
