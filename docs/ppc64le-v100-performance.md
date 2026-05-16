@@ -224,6 +224,13 @@ of the compressor state back to itself after copying it into the first half. A
 The 200-token ai-smil1 check measured `14.62 t/s`, so this is a low-risk cleanup
 with no meaningful measured speed gain.
 
+A temporary attention-output experiment updated the opt-in
+`DS4_METAL_ENABLE_ATTN_OUT_HC_FUSION=1` path so its A projection could use the
+same cached F16/cuBLAS path as the default reference path before the fused Q8
+B/HC expand. It was still worse (`14.15` vs `14.62 t/s` on ai-smil1) and the
+64-token output differed from the reference path (`cmp` exit 1), so the source
+was reverted.
+
 Two projection toggles were checked after the post-upstream baseline and should
 remain off. `DS4_METAL_DISABLE_COMPRESSOR_PAIR_PROJ=1` measured `15.03 t/s`,
 below the default band. `DS4_CUDA_F16_PAIR_MATMUL=1` measured `11.76 t/s`, so
