@@ -41,6 +41,12 @@ shared-down/HC measured about `shared_down=0.175 ms/layer` plus
 `shared_down=0.068 ms/layer` plus `ffn_hc_post=0.064 ms/layer`. The separate
 path is faster overall.
 
+The adjacent shared gate/up/SwiGLU fusion should stay enabled. Testing
+`DS4_METAL_DISABLE_SHARED_GATE_UP_SWIGLU_FUSION=1` with the fast shared-down
+setting produced only noise-level direct throughput (`13.14 t/s` on ai-smil2)
+and worsened the profiled `shared_gate_up` bucket from about `0.100 ms/layer`
+to `0.114 ms/layer`.
+
 A 2026-05-16 follow-up added `DS4_OUTPUT_HEAD_PROFILE=1` to isolate the final
 output head. This profiler synchronizes before the output head and between
 substeps, so it is for diagnosis rather than speed measurement. A later
