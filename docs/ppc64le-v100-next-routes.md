@@ -186,6 +186,9 @@ dev-node sweep did not find a safe route to 15 tok/s:
 - A V100 ptxas register-cap sweep did find a small build-level win:
   `maxrregcount=64` measured `13.40-13.43 t/s` and is now the `cuda-v100`
   default. Higher and lower caps were weaker or not reproducibly better.
+- ptxas `-dlcm=ca` and `-dlcm=cg` cache modifiers did not improve the
+  64-register build. `ca` matched the best ai-smil1 long run but regressed
+  ai-smil2; `cg` was also below the default path.
 
 The latest dev profile still points to routed MoE as the realistic large
 single-node target. Reaching 15 tok/s likely needs a new MoE down projection
