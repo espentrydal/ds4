@@ -79,6 +79,13 @@ measured ai-smil1 at `13.44 t/s` with 60 regs and `13.46 t/s` with 64 regs, and
 ai-smil2 at `13.33 t/s` with both 60 and 64 regs. Keep 64 as the safer V100
 default.
 
+The same build-flag sweep tested ptxas load-cache modifiers with the
+64-register cap. `-dlcm=cg` measured `13.41 t/s` on a 200-token ai-smil2 run.
+`-dlcm=ca` measured `13.46 t/s` on a 200-token ai-smil1 run, but longer
+500-token checks showed no useful win: ai-smil1 stayed at `13.46 t/s`, matching
+the plain 64-register build, while ai-smil2 regressed to `13.30 t/s`. Do not
+add a default `dlcm` modifier.
+
 The adjacent shared gate/up/SwiGLU fusion should stay enabled. Testing
 `DS4_METAL_DISABLE_SHARED_GATE_UP_SWIGLU_FUSION=1` with the fast shared-down
 setting produced only noise-level direct throughput (`13.14 t/s` on ai-smil2)
