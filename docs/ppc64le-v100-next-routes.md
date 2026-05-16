@@ -34,6 +34,10 @@ shared_down         0.068 ms/layer
    `DS4_CUDA_DISABLE_SHARED_GATE_UP_PAIR=1` opt-out also worsened the same
    bucket (`0.100 -> 0.115 ms/layer`).
 
+   Keep QKV pair projection enabled as well. The
+   `DS4_CUDA_DISABLE_QKV_PAIR_PROJ=1` opt-out raised `q_path` from
+   `0.186 -> 0.253 ms/layer` and dropped direct decode to `12.89 t/s`.
+
 1. Routed-MoE down/gate-up kernel work.
 
    This remains the largest bucket. The fused midq kernel helped, but MoE is
