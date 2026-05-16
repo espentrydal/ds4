@@ -45,6 +45,14 @@ regressed (`down=0.300 ms`, `total=0.594 ms`), and gate row 512/2048 variants
 left `gateup` around `0.261 ms`. The row-span toggles are not a route to 15
 tok/s.
 
+A later decode-only MoE down experiment tried a 5-row x 6-slot direct-sum
+kernel, guarded during the test as `DS4_CUDA_MOE_DIRECT_DOWN_SUM6_ROWS5=1`.
+It preserved expert-slot parallelism while avoiding the intermediate
+`6 * out_dim` down buffer. It still regressed: the explicit sum stage dropped
+from about `0.009 ms/layer` to `0.002 ms/layer`, but `down` rose from
+`0.299 ms/layer` to `0.320 ms/layer`, increasing total MoE time. The temporary
+kernel was reverted.
+
 `nvprof` on a short decode run confirmed the active warm-decode MoE kernels:
 `moe_down_qwarp32_kernel` averaged about `293 us/layer`, and
 `moe_gate_up_midq_decode_lut_qwarp32_kernel` averaged about `256 us/layer`.
@@ -115,9 +123,10 @@ profiled `q_path` to `0.187 ms/layer`.
 
 Follow-up MoE checks did not find a better decode mode: write-gate/up,
 direct-sum6, no-LUT gate/up, and a temporary atomic-down experiment all
-regressed. Attention-output follow-ups were also flat: one-token cuBLAS for
-`attn_output_a` and opt-in F16 output-head caching did not produce a meaningful
-speedup.
+regressed. A 5-row x 6-slot direct-sum down kernel also regressed by trading a
+smaller sum stage for a larger down stage. Attention-output follow-ups were
+also flat: one-token cuBLAS for `attn_output_a` and opt-in F16 output-head
+caching did not produce a meaningful speedup.
 
 Output-head follow-up timings from direct CLI runs with `DS4_OUTPUT_HEAD_PROFILE=1`:
 
