@@ -30,7 +30,9 @@ shared_down         0.068 ms/layer
    Keep the adjacent shared gate/up/SwiGLU fusion enabled. Its opt-out,
    `DS4_METAL_DISABLE_SHARED_GATE_UP_SWIGLU_FUSION=1`, worsened the profiled
    `shared_gate_up` bucket (`0.100 -> 0.114 ms/layer`) and did not show a clear
-   direct-generation win.
+   direct-generation win. The narrower
+   `DS4_CUDA_DISABLE_SHARED_GATE_UP_PAIR=1` opt-out also worsened the same
+   bucket (`0.100 -> 0.115 ms/layer`).
 
 1. Routed-MoE down/gate-up kernel work.
 

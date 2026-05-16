@@ -47,6 +47,10 @@ setting produced only noise-level direct throughput (`13.14 t/s` on ai-smil2)
 and worsened the profiled `shared_gate_up` bucket from about `0.100 ms/layer`
 to `0.114 ms/layer`.
 
+The narrower `DS4_CUDA_DISABLE_SHARED_GATE_UP_PAIR=1` check also should not be a
+default. It left direct throughput at the ai-smil2 baseline (`13.09 t/s`) and
+similarly worsened the profiled `shared_gate_up` bucket to `0.115 ms/layer`.
+
 A 2026-05-16 follow-up added `DS4_OUTPUT_HEAD_PROFILE=1` to isolate the final
 output head. This profiler synchronizes before the output head and between
 substeps, so it is for diagnosis rather than speed measurement. A later
