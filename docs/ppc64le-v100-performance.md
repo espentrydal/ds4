@@ -109,6 +109,11 @@ between the old and new paths matched exactly (`cmp` exit 0). The 64-row shape
 is now the default; set `DS4_CUDA_MOE_DOWN_ROWS32=1` only to compare with the
 older kernel.
 
+The default no-env build was rechecked after the source change and measured
+`14.09 t/s` on ai-smil1 and `14.04 t/s` on ai-smil2. The systemd service path
+on ai-smil2, at the production 128K context, logged `14.30 t/s` for the first
+50-token chunk and `13.81 t/s` average over 200 generated tokens.
+
 The adjacent shared gate/up/SwiGLU fusion should stay enabled. Testing
 `DS4_METAL_DISABLE_SHARED_GATE_UP_SWIGLU_FUSION=1` with the fast shared-down
 setting produced only noise-level direct throughput (`13.14 t/s` on ai-smil2)
