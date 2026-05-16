@@ -53,7 +53,10 @@ decode results were:
 
 ```text
 maxrregcount=56  13.26 t/s
+maxrregcount=60  13.37-13.49 t/s
+maxrregcount=62  13.43 t/s
 maxrregcount=64  13.40-13.43 t/s
+maxrregcount=68  13.35 t/s
 maxrregcount=72  13.37 t/s
 maxrregcount=80  13.33 t/s
 maxrregcount=96  12.86 t/s
@@ -68,6 +71,13 @@ rechecked at `13.40 t/s` on ai-smil1 and `13.43 t/s` on ai-smil2. The capped
 profile preserved the same broad hotspot order: `routed_moe=0.662 ms/layer`,
 `attn_output=0.280 ms/layer`, `q_path=0.187 ms/layer`, and
 `compressor_indexer=0.153 ms/layer`.
+
+Follow-up checks around the 64-register cap did not justify changing the
+default to 60. A 200-token ai-smil1 run at 60 regs reached `13.49 t/s`, but it
+did not reproduce on ai-smil2 (`13.37 t/s`). Longer 500-token swapped checks
+measured ai-smil1 at `13.44 t/s` with 60 regs and `13.46 t/s` with 64 regs, and
+ai-smil2 at `13.33 t/s` with both 60 and 64 regs. Keep 64 as the safer V100
+default.
 
 The adjacent shared gate/up/SwiGLU fusion should stay enabled. Testing
 `DS4_METAL_DISABLE_SHARED_GATE_UP_SWIGLU_FUSION=1` with the fast shared-down
