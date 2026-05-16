@@ -3,10 +3,10 @@
 Current best verified one-node decode result:
 
 ```text
-ds4: prefill: 0.15 t/s, generation: 14.64 t/s
+ds4: prefill: 0.15 t/s, generation: 14.85 t/s
 ```
 
-Getting to 15 tok/s requires roughly a 2-3 percent token-latency reduction
+Getting to 15 tok/s requires roughly a 1 percent token-latency reduction
 from the current path. The latest synchronized profile still has most remaining
 time inside the layer loop:
 
@@ -99,7 +99,15 @@ shared_down         0.068 ms/layer
    segments, but it regressed on V100. Output logits are therefore not a
    meaningful warm-decode route toward 15 tok/s.
 
-5. Attention-output projection fusion.
+5. Keep one-token cuBLAS for attention-output A.
+
+   The `attn_output_a` F16/cuBLAS path now runs for one-token decode, not just
+   prefill/batch. Direct 200-token checks measured `14.85 t/s` on ai-smil1 and
+   `14.79 t/s` on ai-smil2; a 500-token ai-smil1 run measured `14.75 t/s`. A
+   same-binary 64-token output comparison against the old Q8 decode path matched
+   exactly and the cuBLAS-A run measured `15.06 t/s` on that short check.
+
+6. Attention-output projection fusion.
 
    The current reference attention-output path is faster than the fused HC path,
    but `attn_output` is still the second-largest layer bucket. One-token cuBLAS
@@ -116,7 +124,7 @@ shared_down         0.068 ms/layer
    existing `DS4_METAL_ENABLE_ATTN_OUT_HC_FUSION=1` path was rechecked on the
    current build and still regressed (`12.64 -> 12.19 t/s` direct decode).
 
-6. Compressor/indexer path.
+7. Compressor/indexer path.
 
    `compressor_indexer` is smaller than MoE and attention output, but still large
    enough to matter. The current short-prompt decode profile does not exercise
@@ -129,14 +137,14 @@ shared_down         0.068 ms/layer
    more relevant to long-context decode than to the current short-context speed
    target.
 
-7. Pure-kernel CUDA graph islands.
+8. Pure-kernel CUDA graph islands.
 
    CUDA graph capture around cuBLAS failed on this stack. Graph work may still
    help for pure-kernel islands, but the current hot path now includes more
    cuBLAS GEMV, so graphing is less likely to be the biggest win unless scoped
    to non-cuBLAS groups.
 
-8. Two-node execution.
+9. Two-node execution.
 
    Cross-node tensor parallelism over InfiniBand is unlikely to improve
    single-stream decode latency. A layer-pipeline split could be explored, but
@@ -213,11 +221,18 @@ dev-node sweep did not find a safe route to 15 tok/s:
 - Q8 warp-row geometry for attention-output/general Q8 kernels was checked and
   reverted. Rows16 measured `14.51 t/s` and rows32 measured `14.39 t/s`, both
   below the rows128 MoE default path.
+- One-token cuBLAS for attention-output A produced a small real gain and is now
+  the default. It repeated at `14.75-14.85 t/s` on longer checks and matched
+  the old Q8 decode path exactly on a 64-token output comparison.
+- Rechecking the V100 register cap after rows128/cuBLAS-A did not improve the
+  default. `maxrregcount=60` was flat at `14.83 t/s`; `maxrregcount=72` is
+  invalid with the 1024-thread rows128 down kernel because it exceeds launch
+  resources.
 
 The latest dev profile still points to routed MoE as the realistic large
 single-node target, with attention output also still significant. Reaching
-15 tok/s likely needs a smaller additional gain from MoE gate/up, attention
-output, or compressor/cache-update work.
+15 tok/s on the main 200-token benchmark likely needs a smaller additional gain
+from MoE gate/up, attention output B, or compressor/cache-update work.
 
 ## 2026-05-16 Indexer Check
 
