@@ -324,6 +324,10 @@ Additional topology and projection checks also did not produce a route:
   against the previous binary on a 64-token check and measured `14.62 t/s` on a
   200-token ai-smil1 run, so it is kept as a cleanup but not counted as a
   meaningful route toward 18 tok/s.
+- A temporary `DS4_CUDA_COMPRESSOR_EMIT_FUSED=1` one-row emit kernel fused
+  compressor pool, RMS+weight, and RoPE. It matched default output exactly on
+  64-token and 200-token checks, but the 200-token direct run only moved from
+  `14.64` to `14.66 t/s`. That is noise-level, so the source was reverted.
 - `DS4_METAL_DISABLE_COMPRESSOR_PAIR_PROJ=1` measured `15.03 t/s`, below the
   current default band, so compressor pair projection should stay enabled.
 - `DS4_CUDA_F16_PAIR_MATMUL=1` measured `11.76 t/s`, far below the current

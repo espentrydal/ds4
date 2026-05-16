@@ -224,6 +224,12 @@ of the compressor state back to itself after copying it into the first half. A
 The 200-token ai-smil1 check measured `14.62 t/s`, so this is a low-risk cleanup
 with no meaningful measured speed gain.
 
+A temporary one-row compressor emit fusion combined pool, RMS+weight, and RoPE
+behind `DS4_CUDA_COMPRESSOR_EMIT_FUSED=1`. It preserved output exactly in both
+64-token and 200-token comparisons (`cmp` exit 0), but the 200-token direct
+ai-smil1 run moved only from `14.64` to `14.66 t/s`. That is noise-level, so the
+source was reverted and this is not a material route toward 18 tok/s.
+
 A temporary attention-output experiment updated the opt-in
 `DS4_METAL_ENABLE_ATTN_OUT_HC_FUSION=1` path so its A projection could use the
 same cached F16/cuBLAS path as the default reference path before the fused Q8
