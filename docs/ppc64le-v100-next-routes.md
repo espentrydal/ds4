@@ -112,6 +112,8 @@ dev-node sweep did not find a safe route to 15 tok/s:
 - Output-head instrumentation showed that final logits are a major decode
   bucket, but neither disabling split output nor caching output Q8 weights as
   F16 improved throughput.
+- A temporary half-warp output Q8 kernel shape was flat against the same-node
+  baseline (`67.02 ms` vs `67.10 ms` logits) and was reverted.
 
 The latest dev profile still points to routed MoE and output logits as the two
 realistic single-node targets. Reaching 15 tok/s likely needs a new MoE down
