@@ -279,6 +279,11 @@ better. `DS4_CUDA_NO_ATTENTION_OUTPUT_F16_CACHE=1` changed the output hash and
 also measured only `14.40 t/s`, so disabling the attention-output F16 cache is
 neither a correctness-preserving nor a speed route.
 
+The large Q8->F32 cache path was also rejected for the attention-output B sized
+matmul. `DS4_CUDA_Q8_F32_LARGE=1` changed the 64-token output hash, triggered a
+CUDA model arena allocation failure for `moe_down`, and measured only
+`12.31 t/s` without verbose logging.
+
 Two projection toggles were checked after the post-upstream baseline and should
 remain off. `DS4_METAL_DISABLE_COMPRESSOR_PAIR_PROJ=1` measured `15.03 t/s`,
 below the default band. `DS4_CUDA_F16_PAIR_MATMUL=1` measured `11.76 t/s`, so
