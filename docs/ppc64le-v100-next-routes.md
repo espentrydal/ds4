@@ -337,6 +337,11 @@ Additional topology and projection checks also did not produce a route:
   the existing fused Q head-RMS+RoPE CUDA kernel. It matched output exactly and
   shaved only about `0.004 ms/layer` from `q_path`; the 200-token direct run
   regressed from `14.64` to `14.58 t/s`, so the source was reverted.
+- Additional attention-output fallbacks were rejected. `DS4_CUDA_NO_CUBLAS_ATTENTION_OUTPUT_A=1`
+  preserved output exactly but measured only `14.41 t/s`, and
+  `DS4_CUDA_NO_ATTENTION_OUTPUT_F16_CACHE=1` changed output while measuring
+  `14.40 t/s`. Keep the cached F16/cuBLAS A projection and attention-output F16
+  cache enabled.
 - `DS4_METAL_DISABLE_COMPRESSOR_PAIR_PROJ=1` measured `15.03 t/s`, below the
   current default band, so compressor pair projection should stay enabled.
 - `DS4_CUDA_F16_PAIR_MATMUL=1` measured `11.76 t/s`, far below the current
