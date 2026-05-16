@@ -1,14 +1,16 @@
 # ppc64le V100 Next Performance Routes
 
-Current best verified one-node decode result:
+Current best verified default one-node decode result:
 
 ```text
-ds4: prefill: 0.15 t/s, generation: 14.85 t/s
+ds4: prefill: 0.15 t/s, generation: 14.88 t/s
 ```
 
-Getting to 15 tok/s requires roughly a 1 percent token-latency reduction
-from the current path. The latest synchronized profile still has most remaining
-time inside the layer loop:
+The best reserve-tuning one-off measured `14.91 t/s`, but follow-up lower
+reserve checks landed at `14.82-14.83 t/s`, so reserve tuning is not a default
+route. Getting the main 200-token benchmark to 15 tok/s now requires roughly a
+1 percent token-latency reduction from the current path. The latest synchronized
+profile still has most remaining time inside the layer loop:
 
 ```text
 routed_moe          0.506 ms/layer
@@ -60,7 +62,8 @@ shared_down         0.068 ms/layer
    runs, and `14.47 t/s` on an ai-smil2 500-token run. Rows64 and rows32 remain
    available with
    `DS4_CUDA_MOE_DOWN_ROWS64=1` and `DS4_CUDA_MOE_DOWN_ROWS32=1` for
-   comparison.
+   comparison. `DS4_CUDA_MOE_DOWN_ROWS96=1` also exists as a comparison path,
+   but it was flat with rows64 and is not documented as a tuning target.
 
 3. Routed-MoE gate-up kernel work.
 
@@ -111,11 +114,12 @@ shared_down         0.068 ms/layer
 
    The current reference attention-output path is faster than the fused HC path,
    but `attn_output` is still the second-largest layer bucket. One-token cuBLAS
-   for `attn_output_a` was flat, so the likely route is a purpose-built
-   out-a/out-b/HC expansion fusion that avoids extra intermediate traffic
-   without repeating the slower older fused path. Disabling attention-output
-   F16 caching improved the synchronized `attn_output` stage, but same-node
-   direct generation regressed (`12.64 -> 12.55 t/s`), so it is not a
+   for `attn_output_a` is now the default and gave a small real win, so the
+   remaining likely route is `attention_output_b` or a purpose-built
+   out-a/out-b/HC expansion pipeline that avoids extra intermediate traffic
+   without repeating the slower older fused path. Disabling attention-output F16
+   caching improved the synchronized `attn_output` stage, but same-node direct
+   generation regressed (`12.64 -> 12.55 t/s`), so it is not a
    production-default route. CUDA event timing with
    `DS4_CUDA_ATTENTION_OUTPUT_PROFILE=1` showed the default path split almost
    evenly between `attention_output_a` (`0.142 ms/layer`) and
@@ -228,6 +232,11 @@ dev-node sweep did not find a safe route to 15 tok/s:
   default. `maxrregcount=60` was flat at `14.83 t/s`; `maxrregcount=72` is
   invalid with the 1024-thread rows128 down kernel because it exceeds launch
   resources.
+- Rechecking F16-cache reserve after rows128/cuBLAS-A also did not produce a
+  defaultable win. `DS4_CUDA_Q8_F16_CACHE_RESERVE_MB=3072` measured
+  `14.84 t/s`, `2048` produced one `14.91 t/s` run but was not established as
+  better than noise, and lower `1536`/`1024` checks measured `14.83` and
+  `14.82 t/s`.
 
 The latest dev profile still points to routed MoE as the realistic large
 single-node target, with attention output also still significant. Reaching
@@ -243,11 +252,12 @@ after the ratio-4 compressed row count exceeds 512. The layer-level profile stil
 shows `compressor_indexer` around `0.151-0.152 ms/layer`, but for the current
 benchmark that should be read as compressor/update overhead, not top-k overhead.
 
-After the V100 register cap and 64-row MoE down change, the 15 tok/s priority
+After the V100 register cap, 128-row MoE down, and one-token cuBLAS-A changes,
+the 15 tok/s priority
 order is:
 
-1. fused MoE gate/up+midq work, plus any further down shape that beats rows64,
-2. attention-output projection fusion,
+1. fused MoE gate/up+midq work, plus any further down shape that beats rows128,
+2. attention-output B or full attention-output projection pipeline work,
 3. compressor/cache-update fusion as a secondary route,
 4. long-context indexer top-k work only if long-context decode becomes the main
    target.
