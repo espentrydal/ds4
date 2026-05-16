@@ -3,22 +3,29 @@
 Current best verified one-node decode result:
 
 ```text
-ds4: prefill: 0.19 t/s, generation: 12.76 t/s
+ds4: prefill: 0.15 t/s, generation: 13.20 t/s
 ```
 
-Getting to 15 tok/s requires roughly a 15 percent token-latency reduction from
+Getting to 15 tok/s requires roughly a 12 percent token-latency reduction from
 the current path. The latest synchronized profile still has most remaining time
 inside the layer loop:
 
 ```text
-routed_moe          0.662 ms/layer
-attn_output         0.277 ms/layer
-q_path              0.188 ms/layer
-shared_down         0.175 ms/layer
-compressor_indexer  0.152 ms/layer
+routed_moe          0.660 ms/layer
+attn_output         0.278 ms/layer
+q_path              0.186 ms/layer
+compressor_indexer  0.151 ms/layer
+shared_gate_up      0.100 ms/layer
+shared_down         0.068 ms/layer
 ```
 
 ## Most Realistic Routes
+
+0. Keep `DS4_METAL_DISABLE_SHARED_DOWN_HC_FUSION=1` enabled.
+
+   This is the current fastest simple route. It measured `12.64 -> 13.20 t/s`
+   on ai-smil1 and `12.55 -> 13.09 t/s` on ai-smil2. The separate shared-down
+   and HC-post path is faster than the older fused path.
 
 1. Routed-MoE down/gate-up kernel work.
 

@@ -8,6 +8,7 @@ DS4_CUDA_SPLIT_OUTPUT_HEAD=1
 DS4_CUDA_DEVICES=0,1,2,3
 DS4_CUDA_TENSOR_SPLIT=8.2,8.2,8.2,8.2
 DS4_CUDA_WEIGHT_ARENA_CHUNK_MB=512
+DS4_METAL_DISABLE_SHARED_DOWN_HC_FUSION=1
 ```
 
 Use `scripts/server-ds4-flash-v100-1node.sh` for OpenAI/Anthropic-compatible
@@ -30,6 +31,15 @@ skewed tensor split, direct MoE down+sum, disabled attention-output F16 cache,
 explicit fast MoE SILU, and a shared-`midq` decode down kernel. None improved
 the service path beyond the roughly 13 tok/s server-side result; several
 regressed.
+
+The first simple route that did improve current direct decode was disabling the
+shared-down/HC fusion with `DS4_METAL_DISABLE_SHARED_DOWN_HC_FUSION=1`. Same
+prompt 200-token checks measured `12.64 -> 13.20 t/s` on ai-smil1 and
+`12.55 -> 13.09 t/s` on ai-smil2. The stage profile shows why: default fused
+shared-down/HC measured about `shared_down=0.175 ms/layer` plus
+`ffn_hc_post=0.008 ms/layer`, while the opt-out measured
+`shared_down=0.068 ms/layer` plus `ffn_hc_post=0.064 ms/layer`. The separate
+path is faster overall.
 
 A 2026-05-16 follow-up added `DS4_OUTPUT_HEAD_PROFILE=1` to isolate the final
 output head. This profiler synchronizes before the output head and between
@@ -72,18 +82,18 @@ DS4_METAL_DECODE_STAGE_PROFILE=1
 DS4_CUDA_MOE_PROFILE=1
 ```
 
-Current short profile run result after the routed-MoE fused-midq change:
+Current short profile run result with the fast shared-down/HC opt-out:
 
 ```text
-ds4: prefill: 0.13 t/s, generation: 10.45 t/s
+ds4: prefill: 0.15 t/s, generation: 10.76 t/s
 ```
 
 The profile is slower than normal generation because the stage profiler
-synchronizes frequently. The current normal 96-token generation benchmark for
+synchronizes frequently. The current normal 200-token generation benchmark for
 this build is:
 
 ```text
-ds4: prefill: 0.19 t/s, generation: 12.76 t/s
+ds4: prefill: 0.15 t/s, generation: 13.20 t/s
 ```
 
 Later decode-path tuning on the same model and CUDA split measured:
