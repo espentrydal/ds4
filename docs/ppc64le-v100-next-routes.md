@@ -35,13 +35,24 @@ compressor_indexer  0.152 ms/layer
    gains probably need a new decode-specialized down accumulation strategy that
    preserves per-expert parallelism while reducing intermediate traffic.
 
-2. Output/logits path instrumentation.
+2. Output/logits kernel work.
 
-   The current stage profile is layer-focused and does not break down the final
-   output-head/logits path clearly. Before changing more output code, add timing
-   around output projection, split-device synchronization, sampling, and any
-   device-host transfer. Previous opt-in F16 output-split caching was flat, but
-   the full output/logits path may still hide non-layer latency.
+   The stage profile is layer-focused, so an opt-in `DS4_OUTPUT_HEAD_PROFILE=1`
+   profiler was added for the final output head. It synchronizes before the
+   output head and between its substeps, so it is diagnostic only. On the
+   current 4xV100 path, isolated output logits are a real bucket:
+
+   ```text
+   split output default:   logits 67.3 ms/token, total output head 67.6 ms/token
+   split output disabled:  logits 68.0 ms/token, total output head 68.4 ms/token
+   output F16 cache:       logits 69.2 ms/token, total output head 69.6 ms/token
+   ```
+
+   Split output is slightly helpful, but not enough. A narrow opt-in
+   `DS4_CUDA_OUTPUT_F16_CACHE=1` path can cache `output`/`output_split` Q8
+   weights as F16; with a lower cache reserve it did cache the four output
+   segments, but it regressed on V100. The remaining output route is therefore a
+   better Q8 output-logits algorithm, not dequantized F16/cuBLAS.
 
 3. Attention-output projection fusion.
 
@@ -98,7 +109,11 @@ dev-node sweep did not find a safe route to 15 tok/s:
   already uses `--use_fast_math`.
 - A decode-only shared-`midq` MoE-down kernel was tested and regressed. The
   added shared-memory staging overhead outweighed the reduced `midq` reloads.
+- Output-head instrumentation showed that final logits are a major decode
+  bucket, but neither disabling split output nor caching output Q8 weights as
+  F16 improved throughput.
 
-The latest dev profile still points to routed MoE as the only realistic large
-single-node target, especially the down projection. Reaching 15 tok/s likely
-needs a new down-projection algorithm rather than another environment toggle.
+The latest dev profile still points to routed MoE and output logits as the two
+realistic single-node targets. Reaching 15 tok/s likely needs a new MoE down
+projection algorithm, a better output-logits Q8 kernel, or both, rather than
+another environment toggle.
