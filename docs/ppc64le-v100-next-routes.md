@@ -210,6 +210,9 @@ dev-node sweep did not find a safe route to 15 tok/s:
   `12.90 t/s`, rows64 reached roughly `14.0 t/s`, rows96 was flat with rows64,
   and rows128 repeated at `14.47-14.66 t/s` on longer checks. A same-binary
   32-token output comparison between rows64 and rows128 matched exactly.
+- Q8 warp-row geometry for attention-output/general Q8 kernels was checked and
+  reverted. Rows16 measured `14.51 t/s` and rows32 measured `14.39 t/s`, both
+  below the rows128 MoE default path.
 
 The latest dev profile still points to routed MoE as the realistic large
 single-node target, with attention output also still significant. Reaching
