@@ -123,6 +123,12 @@ dev-node sweep did not find a safe route to 15 tok/s:
   measured `down=0.296 ms` and `total=0.587 ms`, `DOWN_ROW512` regressed to
   `down=0.300 ms`, and gate row 512/2048 both left `gateup` around
   `0.261 ms`.
+- `nvprof` confirms the warm decode MoE kernels are
+  `moe_down_qwarp32_kernel` at roughly `293 us/layer` and
+  `moe_gate_up_midq_decode_lut_qwarp32_kernel` at roughly `256 us/layer`.
+  `ncu` hardware counters are blocked by `ERR_NVGPUCTRPERM` on these nodes.
+- A temporary `__forceinline__` test on the Q2 down dot helpers was flat to
+  slightly worse (`down=0.298-0.300 ms`) and was reverted.
 
 The latest dev profile still points to routed MoE as the realistic large
 single-node target. Reaching 15 tok/s likely needs a new MoE down projection

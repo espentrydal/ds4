@@ -45,6 +45,15 @@ regressed (`down=0.300 ms`, `total=0.594 ms`), and gate row 512/2048 variants
 left `gateup` around `0.261 ms`. The row-span toggles are not a route to 15
 tok/s.
 
+`nvprof` on a short decode run confirmed the active warm-decode MoE kernels:
+`moe_down_qwarp32_kernel` averaged about `293 us/layer`, and
+`moe_gate_up_midq_decode_lut_qwarp32_kernel` averaged about `256 us/layer`.
+The larger `moe_*expert_tile8_row32*` kernels in the same summary are prefill,
+not generated-token decode. `ncu` could not collect hardware counters because
+GPU performance counters are permission-blocked (`ERR_NVGPUCTRPERM`). A
+temporary `__forceinline__` test on the Q2 down dot helpers was flat to slightly
+worse and was reverted.
+
 ## Current Profile
 
 Profile command used the same fast CUDA split plus:
