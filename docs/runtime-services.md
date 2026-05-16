@@ -43,6 +43,11 @@ environment confirmed the override and a warm 200-token request at 128K context
 logged `13.28 t/s` for the first 50-token chunk and `12.99 t/s` average over
 200 tokens. The direct 32K CLI benchmark remains faster at about `13.20 t/s`.
 
+Later on 2026-05-16, after the 64-row MoE decode down kernel became the default,
+a warm 200-token `ds4-server.service` request at 128K context logged
+`14.30 t/s` for the first 50-token chunk and `13.81 t/s` average over 200
+tokens. The direct 32K CLI benchmark measured about `14.04-14.09 t/s`.
+
 ### Qwen
 
 - Node: `ai-smil1`
