@@ -7775,6 +7775,19 @@ extern "C" int ds4_gpu_attention_output_q8_batch_tensor(
             cuda_model_range_ptr(model_map, out_b_offset, out_b_bytes, "attn_out_b"));
     if (!out_a || !out_b) return 0;
 
+    const uint32_t profile_attn_out = getenv("DS4_CUDA_ATTENTION_OUTPUT_PROFILE") != NULL;
+    cudaEvent_t prof_ev[3] = {NULL, NULL, NULL};
+    if (profile_attn_out) {
+        for (uint32_t i = 0; i < 3u; i++) {
+            if (cudaEventCreate(&prof_ev[i]) != cudaSuccess) {
+                for (uint32_t j = 0; j < i; j++) (void)cudaEventDestroy(prof_ev[j]);
+                memset(prof_ev, 0, sizeof(prof_ev));
+                break;
+            }
+        }
+        if (prof_ev[0]) (void)cudaEventRecord(prof_ev[0], 0);
+    }
+
     const __half *out_a_f16 = NULL;
     uint32_t out_a_cublas_min_tokens = 2u;
     const char *out_a_min_env = getenv("DS4_CUDA_ATTENTION_OUTPUT_A_CUBLAS_MIN");
@@ -7869,17 +7882,39 @@ extern "C" int ds4_gpu_attention_output_q8_batch_tensor(
                                                           use_dp4a);
         if (!cuda_ok(cudaGetLastError(), "attention_output_q8_a preq launch")) return 0;
     }
+    if (prof_ev[1]) (void)cudaEventRecord(prof_ev[1], 0);
 
     (void)out_b;
-    return cuda_matmul_q8_0_tensor_labeled(out,
-                                           model_map,
-                                           model_size,
-                                           out_b_offset,
-                                           low_dim,
-                                           out_dim,
-                                           low,
-                                           n_tokens,
-                                           "attn_output_b");
+    const int ok = cuda_matmul_q8_0_tensor_labeled(out,
+                                                   model_map,
+                                                   model_size,
+                                                   out_b_offset,
+                                                   low_dim,
+                                                   out_dim,
+                                                   low,
+                                                   n_tokens,
+                                                   "attn_output_b");
+    if (prof_ev[2]) {
+        (void)cudaEventRecord(prof_ev[2], 0);
+        if (cudaEventSynchronize(prof_ev[2]) == cudaSuccess) {
+            float ms_a = 0.0f, ms_b = 0.0f, ms_total = 0.0f;
+            (void)cudaEventElapsedTime(&ms_a, prof_ev[0], prof_ev[1]);
+            (void)cudaEventElapsedTime(&ms_b, prof_ev[1], prof_ev[2]);
+            (void)cudaEventElapsedTime(&ms_total, prof_ev[0], prof_ev[2]);
+            fprintf(stderr,
+                    "ds4: CUDA attention output profile tokens=%u low_dim=%llu out_dim=%llu a=%.3f b=%.3f total=%.3f ms\n",
+                    n_tokens,
+                    (unsigned long long)low_dim,
+                    (unsigned long long)out_dim,
+                    ms_a,
+                    ms_b,
+                    ms_total);
+        }
+    }
+    for (uint32_t i = 0; i < 3u; i++) {
+        if (prof_ev[i]) (void)cudaEventDestroy(prof_ev[i]);
+    }
+    return ok;
 }
 extern "C" int ds4_gpu_attention_output_low_q8_tensor(
         ds4_gpu_tensor       *low,
