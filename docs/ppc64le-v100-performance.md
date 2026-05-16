@@ -98,21 +98,21 @@ zero spill stores/loads, and the fused
 Some batch/tile MoE kernels do spill under the cap, but they are not the current
 short single-token decode path.
 
-A 2026-05-16 source-level MoE down shape check found the next real gain. The
-old decode down kernel processed 32 output rows per block with 256 threads. An
-otherwise identical 64-row/512-thread shape reduced the synchronized MoE down
-bucket from about `0.318 ms/layer` to `0.236 ms/layer`, reducing routed MoE
-from about `0.662 ms/layer` to `0.579 ms/layer`. Direct 200-token checks
-measured `13.96 t/s` on ai-smil1 and `14.03 t/s` on ai-smil2; a 500-token
-ai-smil2 run measured `14.01 t/s`. A same-binary 32-token output comparison
-between the old and new paths matched exactly (`cmp` exit 0). The 64-row shape
-is now the default; set `DS4_CUDA_MOE_DOWN_ROWS32=1` only to compare with the
-older kernel.
+A 2026-05-16 source-level MoE down shape sweep found the next real gain. The
+old decode down kernel processed 32 output rows per block with 256 threads.
+Increasing the same quarter-warp dot shape to 64 rows per block reduced the
+synchronized MoE down bucket from about `0.318 ms/layer` to `0.236 ms/layer`.
+Increasing again to 128 rows per block with 1024 threads reduced it further to
+`0.162 ms/layer`, with routed MoE falling to `0.506 ms/layer`.
 
-The default no-env build was rechecked after the source change and measured
-`14.09 t/s` on ai-smil1 and `14.04 t/s` on ai-smil2. The systemd service path
-on ai-smil2, at the production 128K context, logged `14.30 t/s` for the first
-50-token chunk and `13.81 t/s` average over 200 generated tokens.
+Direct rows128 checks measured `14.66 t/s` on ai-smil1, `14.62 t/s` on an
+ai-smil2 200-token run, and `14.47 t/s` on an ai-smil2 500-token run. A
+same-binary 32-token output comparison between rows64 and rows128 matched
+exactly (`cmp` exit 0), and the rows128 run measured `15.06 t/s` on that short
+check. The 128-row shape is now the default. Use `DS4_CUDA_MOE_DOWN_ROWS64=1`
+or `DS4_CUDA_MOE_DOWN_ROWS32=1` only for comparisons with the older kernels.
+The default no-env build rechecked at `14.61 t/s` on ai-smil1 and `14.64 t/s`
+on ai-smil2 for the standard 200-token direct benchmark.
 
 The adjacent shared gate/up/SwiGLU fusion should stay enabled. Testing
 `DS4_METAL_DISABLE_SHARED_GATE_UP_SWIGLU_FUSION=1` with the fast shared-down

@@ -10900,7 +10900,18 @@ static int routed_moe_launch(
                     out_dim,
                     n_expert);
             } else {
-                if (getenv("DS4_CUDA_MOE_DOWN_ROWS32") == NULL) {
+                if (getenv("DS4_CUDA_MOE_DOWN_ROWS32") != NULL) {
+                    moe_down_qwarp32_kernel<<<dgrid, 256>>>(
+                        (float *)down->ptr,
+                        down_w,
+                        midq,
+                        (const int32_t *)selected->ptr,
+                        down_expert_bytes,
+                        down_row_bytes,
+                        midq_blocks,
+                        out_dim,
+                        n_expert);
+                } else if (getenv("DS4_CUDA_MOE_DOWN_ROWS64") != NULL) {
                     dim3 rgrid((out_dim + 63u) / 64u, n_tokens * n_expert, 1);
                     moe_down_qwarp_rows_kernel<64><<<rgrid, 512>>>(
                         (float *)down->ptr,
@@ -10912,8 +10923,21 @@ static int routed_moe_launch(
                         midq_blocks,
                         out_dim,
                         n_expert);
+                } else if (getenv("DS4_CUDA_MOE_DOWN_ROWS96") != NULL) {
+                    dim3 rgrid((out_dim + 95u) / 96u, n_tokens * n_expert, 1);
+                    moe_down_qwarp_rows_kernel<96><<<rgrid, 768>>>(
+                        (float *)down->ptr,
+                        down_w,
+                        midq,
+                        (const int32_t *)selected->ptr,
+                        down_expert_bytes,
+                        down_row_bytes,
+                        midq_blocks,
+                        out_dim,
+                        n_expert);
                 } else {
-                    moe_down_qwarp32_kernel<<<dgrid, 256>>>(
+                    dim3 rgrid((out_dim + 127u) / 128u, n_tokens * n_expert, 1);
+                    moe_down_qwarp_rows_kernel<128><<<rgrid, 1024>>>(
                         (float *)down->ptr,
                         down_w,
                         midq,

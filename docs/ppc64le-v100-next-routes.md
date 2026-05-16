@@ -3,20 +3,20 @@
 Current best verified one-node decode result:
 
 ```text
-ds4: prefill: 0.15 t/s, generation: 14.03 t/s
+ds4: prefill: 0.15 t/s, generation: 14.64 t/s
 ```
 
-Getting to 15 tok/s requires roughly a 6-7 percent token-latency reduction
+Getting to 15 tok/s requires roughly a 2-3 percent token-latency reduction
 from the current path. The latest synchronized profile still has most remaining
 time inside the layer loop:
 
 ```text
-routed_moe          0.579 ms/layer
-attn_output         0.278 ms/layer
-q_path              0.188 ms/layer
-compressor_indexer  0.153 ms/layer
-shared_gate_up      0.102 ms/layer
-shared_down         0.069 ms/layer
+routed_moe          0.506 ms/layer
+attn_output         0.277 ms/layer
+q_path              0.189 ms/layer
+compressor_indexer  0.152 ms/layer
+shared_gate_up      0.103 ms/layer
+shared_down         0.068 ms/layer
 ```
 
 ## Most Realistic Routes
@@ -51,24 +51,25 @@ shared_down         0.069 ms/layer
    The `cuda-v100` target applies the 64-register cap through
    `NVCC_PTXAS_FLAGS`; other CUDA targets remain unchanged.
 
-2. Keep the 64-row MoE decode down kernel.
+2. Keep the 128-row MoE decode down kernel.
 
-   The default decode down path now processes 64 output rows per block with 512
-   threads. This moved the profiled MoE down bucket from about
-   `0.318 ms/layer` to `0.236 ms/layer` and reduced routed MoE from about
-   `0.662 ms/layer` to `0.579 ms/layer`. Direct 200-token checks measured
-   `13.96 t/s` on ai-smil1 and `14.03 t/s` on ai-smil2; a 500-token ai-smil2
-   run measured `14.01 t/s`. The old 32-row shape remains available with
-   `DS4_CUDA_MOE_DOWN_ROWS32=1` for comparison.
+   The default decode down path now processes 128 output rows per block with
+   1024 threads. This moved the profiled MoE down bucket from the old
+   `0.318 ms/layer` to `0.162 ms/layer` and reduced routed MoE to about
+   `0.506 ms/layer`. Direct checks measured `14.61-14.66 t/s` on 200-token
+   runs, and `14.47 t/s` on an ai-smil2 500-token run. Rows64 and rows32 remain
+   available with
+   `DS4_CUDA_MOE_DOWN_ROWS64=1` and `DS4_CUDA_MOE_DOWN_ROWS32=1` for
+   comparison.
 
 3. Routed-MoE gate-up kernel work.
 
-   MoE remains the largest bucket. After the 64-row down change, gate/up and
-   down are roughly tied:
+   MoE remains the largest bucket. After the 128-row down change, gate/up is
+   again larger than down:
 
    ```text
-   down    0.236 ms/layer
-   gateup  0.236 ms/layer
+   gateup  0.237 ms/layer
+   down    0.162 ms/layer
    ```
 
    Simple earlier variants already regressed: direct sum6, atomic down, no-LUT
@@ -204,16 +205,16 @@ dev-node sweep did not find a safe route to 15 tok/s:
 - ptxas verbose output showed no spills in the active one-token MoE decode
   kernels under the 64-register cap. Spilling exists in some batch/tile MoE
   kernels, but those are not the current single-token decode bottleneck.
-- A 64-row/512-thread MoE decode down shape produced the next real gain and is
-  now the default. The 16-row shape regressed to `12.90 t/s`; the 64-row shape
-  repeated at `13.96-14.03 t/s` on 200-token checks and `14.01 t/s` on a
-  500-token ai-smil2 check. A same-binary 32-token output comparison with the
-  old path matched exactly.
+- A 64-row/512-thread MoE decode down shape produced a real gain, and the
+  follow-up 128-row/1024-thread shape improved it further. Rows16 regressed to
+  `12.90 t/s`, rows64 reached roughly `14.0 t/s`, rows96 was flat with rows64,
+  and rows128 repeated at `14.47-14.66 t/s` on longer checks. A same-binary
+  32-token output comparison between rows64 and rows128 matched exactly.
 
 The latest dev profile still points to routed MoE as the realistic large
-single-node target. Reaching 15 tok/s likely needs another MoE or
-attention-output gain rather than another simple environment toggle or build
-flag.
+single-node target, with attention output also still significant. Reaching
+15 tok/s likely needs a smaller additional gain from MoE gate/up, attention
+output, or compressor/cache-update work.
 
 ## 2026-05-16 Indexer Check
 
