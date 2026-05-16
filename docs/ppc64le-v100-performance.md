@@ -202,6 +202,12 @@ measured `13.31 t/s`, `DS4_CUDA_MOE_DOWN_ROWS32=1` measured `13.38 t/s`,
 `DS4_CUDA_MOE_DOWN_ROWS96=1` measured `14.04 t/s`. The default 128-row down
 decode path remains the right choice.
 
+A temporary `DS4_CUDA_FUSE_Q_NORM_ROPE=1` decode path used the existing fused
+head-RMS+RoPE CUDA kernel for Q. It matched the default 64-token output exactly
+and reduced the profiled `q_path` only from about `0.189` to `0.185 ms/layer`.
+The 200-token direct run regressed from the existing `14.64 t/s` default check
+to `14.58 t/s`, so the source was reverted.
+
 A temporary intermediate 768-thread MoE gate/up+midq kernel was tested after the
 device-switch check. It was not usable: the short direct comparison was flat
 (`14.63` vs `14.62 t/s`) and the same-binary 64-token output comparison against

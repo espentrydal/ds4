@@ -333,6 +333,10 @@ Additional topology and projection checks also did not produce a route:
   `DS4_CUDA_MOE_DOWN_ROWS96=1` all matched the default output, but measured
   `13.31`, `13.38`, `13.99`, and `14.04 t/s` respectively on 64-token checks.
   The default 128-row decode down path remains best among the existing knobs.
+- `DS4_CUDA_FUSE_Q_NORM_ROPE=1` was tested as a temporary source change using
+  the existing fused Q head-RMS+RoPE CUDA kernel. It matched output exactly and
+  shaved only about `0.004 ms/layer` from `q_path`; the 200-token direct run
+  regressed from `14.64` to `14.58 t/s`, so the source was reverted.
 - `DS4_METAL_DISABLE_COMPRESSOR_PAIR_PROJ=1` measured `15.03 t/s`, below the
   current default band, so compressor pair projection should stay enabled.
 - `DS4_CUDA_F16_PAIR_MATMUL=1` measured `11.76 t/s`, far below the current
