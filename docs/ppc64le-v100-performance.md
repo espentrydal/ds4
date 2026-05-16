@@ -140,6 +140,12 @@ direct benchmark. The systemd service path on ai-smil2, at the production 128K
 context, logged `14.97 t/s` for the first 50-token chunk and `14.61 t/s`
 average over 200 generated tokens.
 
+F16-cache reserve tuning was rechecked again after rows128 and one-token
+cuBLAS A. `DS4_CUDA_Q8_F16_CACHE_RESERVE_MB=3072` measured `14.84 t/s`,
+`2048` produced one `14.91 t/s` run, and lower reserve checks at `1536` and
+`1024` measured `14.83` and `14.82 t/s`. The 2048 result is within the current
+run-to-run band and was not promoted to a default.
+
 The adjacent shared gate/up/SwiGLU fusion should stay enabled. Testing
 `DS4_METAL_DISABLE_SHARED_GATE_UP_SWIGLU_FUSION=1` with the fast shared-down
 setting produced only noise-level direct throughput (`13.14 t/s` on ai-smil2)
@@ -254,9 +260,9 @@ profiled `q_path` to `0.187 ms/layer`.
 Follow-up MoE checks did not find a better decode mode: write-gate/up,
 direct-sum6, no-LUT gate/up, and a temporary atomic-down experiment all
 regressed. A 5-row x 6-slot direct-sum down kernel also regressed by trading a
-smaller sum stage for a larger down stage. Attention-output follow-ups were
-also flat: one-token cuBLAS for `attn_output_a` and opt-in F16 output-head
-caching did not produce a meaningful speedup.
+smaller sum stage for a larger down stage. The useful attention-output follow-up
+was one-token cuBLAS for `attn_output_a`, which is now default; opt-in F16
+output-head caching still did not produce a meaningful speedup.
 
 A later recheck of `DS4_CUDA_NO_ATTENTION_OUTPUT_F16_CACHE=1` showed why this
 should not become a production default. The synchronized profile improved
