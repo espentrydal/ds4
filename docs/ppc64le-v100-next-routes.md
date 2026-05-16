@@ -42,9 +42,13 @@ shared_down         0.068 ms/layer
 
    A 2026-05-16 compile-flag sweep found that ptxas register pressure matters
    on V100. `-Xptxas=-maxrregcount=64` raised direct 200-token decode to
-   `13.40-13.43 t/s`. Nearby caps were weaker: 56 regs measured `13.26 t/s`,
-   72 regs `13.37 t/s`, 80 regs `13.33 t/s`, and 96 regs regressed to
-   `12.86 t/s`. The `cuda-v100` target now applies the 64-register cap through
+   `13.40-13.43 t/s`. Nearby caps were weaker or not reproducibly better:
+   56 regs measured `13.26 t/s`, 60 regs ranged `13.37-13.49 t/s`, 62 regs
+   `13.43 t/s`, 68 regs `13.35 t/s`, 72 regs `13.37 t/s`, 80 regs
+   `13.33 t/s`, and 96 regs regressed to `12.86 t/s`. Longer 500-token swapped
+   checks kept 64 as the safer default: ai-smil1 measured `13.46 t/s` with 64
+   versus `13.44 t/s` with 60, while ai-smil2 measured `13.33 t/s` with both.
+   The `cuda-v100` target applies the 64-register cap through
    `NVCC_PTXAS_FLAGS`; other CUDA targets remain unchanged.
 
 2. Routed-MoE down/gate-up kernel work.
@@ -181,7 +185,7 @@ dev-node sweep did not find a safe route to 15 tok/s:
   (`0.590 -> 0.599 ms`), so it was reverted.
 - A V100 ptxas register-cap sweep did find a small build-level win:
   `maxrregcount=64` measured `13.40-13.43 t/s` and is now the `cuda-v100`
-  default. Higher and lower caps were weaker.
+  default. Higher and lower caps were weaker or not reproducibly better.
 
 The latest dev profile still points to routed MoE as the realistic large
 single-node target. Reaching 15 tok/s likely needs a new MoE down projection
