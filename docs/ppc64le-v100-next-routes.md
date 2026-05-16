@@ -135,6 +135,9 @@ dev-node sweep did not find a safe route to 15 tok/s:
 
 - Lowering `DS4_CUDA_Q8_F16_CACHE_RESERVE_MB` to 2048 or 1024 did not improve
   warm decode. The 1024 MiB reserve triggered CUDA arena allocation failures.
+- After the shared-down/HC opt-out became default, reserve values of 3072 and
+  2048 MiB were rechecked. They measured `13.21-13.22 t/s` versus a same-node
+  default rerun at `13.19 t/s`, which is not enough to justify a default change.
 - Skewing `DS4_CUDA_TENSOR_SPLIT` from `8.2,8.2,8.2,8.2` to
   `7.0,8.2,9.4,8.2` moved memory pressure to GPU2 and regressed throughput to
   about 11.5 tok/s server-side.
