@@ -66,7 +66,11 @@ compressor_indexer  0.152 ms/layer
    without repeating the slower older fused path. Disabling attention-output
    F16 caching improved the synchronized `attn_output` stage, but same-node
    direct generation regressed (`12.64 -> 12.55 t/s`), so it is not a
-   production-default route.
+   production-default route. CUDA event timing with
+   `DS4_CUDA_ATTENTION_OUTPUT_PROFILE=1` showed the default path split almost
+   evenly between `attention_output_a` (`0.142 ms/layer`) and
+   `attention_output_b` (`0.137 ms/layer`), so meaningful work here probably
+   needs to reduce the whole A/B/HC pipeline rather than one subprojection.
 
 4. Compressor/indexer path.
 

@@ -134,6 +134,15 @@ should not become a production default. The synchronized profile improved
 200-token generation moved the wrong way, from `12.64 t/s` default to
 `12.55 t/s` with attention-output F16 caching disabled.
 
+`DS4_CUDA_ATTENTION_OUTPUT_PROFILE=1` is available for opt-in CUDA event timing
+inside the attention-output projection. On warm decode it split the default
+path almost evenly between `attention_output_a` and `attention_output_b`:
+`a=0.142 ms/layer`, `b=0.137 ms/layer`, `total=0.280 ms/layer`. With
+`DS4_CUDA_NO_ATTENTION_OUTPUT_F16_CACHE=1`, CUDA event timing dropped to
+`a=0.140`, `b=0.115`, `total=0.256 ms/layer`, but the synchronized stage and
+direct generation did not improve. Treat this profiler as a routing diagnostic,
+not as a production speed measurement.
+
 Output-head follow-up timings from direct CLI runs with `DS4_OUTPUT_HEAD_PROFILE=1`:
 
 ```text
