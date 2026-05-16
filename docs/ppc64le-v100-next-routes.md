@@ -284,6 +284,9 @@ Three quick routes did not justify default changes:
 - A temporary 1024-thread fused MoE gate/up+midq kernel matched output but
   regressed the short check (`15.10` vs `15.25 t/s`). The 512-thread kernel
   remains the V100 sweet spot.
+- A temporary 768-thread fused MoE gate/up+midq kernel was also rejected. The
+  short check was flat (`14.63` vs `14.62 t/s`) and the same-binary 64-token
+  output comparison did not match (`cmp` exit 1), so it was reverted.
 - Rechecking the V100 ptxas cap after the 512-thread kernel and upstream picks
   measured `15.13 t/s` with `maxrregcount=60` and `15.10 t/s` with the forced
   default `64` build. This is still noise-level; keep the safer 64-register

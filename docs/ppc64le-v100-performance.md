@@ -188,6 +188,12 @@ output but regressed against the 512-thread default. Rechecking
 forced 64-register build (`15.13` vs `15.10 t/s` on ai-smil1), so the V100
 default remains `-Xptxas=-maxrregcount=64`.
 
+A temporary intermediate 768-thread MoE gate/up+midq kernel was tested after the
+device-switch check. It was not usable: the short direct comparison was flat
+(`14.63` vs `14.62 t/s`) and the same-binary 64-token output comparison against
+the 512-thread default differed (`cmp` exit 1). The source and binary were
+reverted to the 512-thread default.
+
 The four-GPU placement was checked against the physical topology. Both nodes
 have pairwise NVLink, with GPU0<->GPU1 and GPU2<->GPU3 connected by `NV3`; all
 cross-pair GPU paths are `SYS`. The default `DS4_CUDA_DEVICES=0,1,2,3` already
