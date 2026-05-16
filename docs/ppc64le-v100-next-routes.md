@@ -294,3 +294,22 @@ not another small flag. The most plausible remaining source-level routes are a
 new MoE gate/up or down design, an attention-output A/B/HC pipeline fusion that
 does not repeat the older regressing fusion, or compressor/cache-update kernel
 fusion.
+
+Additional topology and projection checks also did not produce a route:
+
+- The node topology is pairwise NVLink: GPU0<->GPU1 and GPU2<->GPU3 are `NV3`,
+  while all cross-pair GPU paths are `SYS`. The default
+  `DS4_CUDA_DEVICES=0,1,2,3` already keeps the 43 layers in contiguous chunks,
+  so the layer handoffs are NVLink, cross-pair, NVLink. Alternate device orders
+  did not beat the default: `1,0,2,3` measured `15.06 t/s`, `0,1,3,2`
+  measured `15.02 t/s`, `1,0,3,2` measured `14.99 t/s`, and `2,3,0,1`
+  measured `14.81 t/s`.
+- Three-GPU runs on `0,1,2` and `0,1,3` caused model-cache arena allocation
+  failures and then generated only `7.10 t/s` and `6.45 t/s`. The fourth GPU is
+  needed for resident weights/cache headroom; removing a cross-pair handoff does
+  not pay for losing that memory.
+- `DS4_METAL_DISABLE_COMPRESSOR_PAIR_PROJ=1` measured `15.03 t/s`, below the
+  current default band, so compressor pair projection should stay enabled.
+- `DS4_CUDA_F16_PAIR_MATMUL=1` measured `11.76 t/s`, far below the current
+  default. The existing two one-token F16/cuBLAS calls are faster than the
+  ordered-chunks F16 pair kernel on V100.
