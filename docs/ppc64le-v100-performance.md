@@ -86,6 +86,18 @@ The same build-flag sweep tested ptxas load-cache modifiers with the
 the plain 64-register build, while ai-smil2 regressed to `13.30 t/s`. Do not
 add a default `dlcm` modifier.
 
+`--extra-device-vectorization` was also mixed with the 64-register cap. It
+measured `13.48 t/s` on a 200-token ai-smil1 run, but longer 500-token checks
+were not consistently better: ai-smil1 dropped to `13.35 t/s`, while ai-smil2
+measured `13.45 t/s`. Do not add it to the default V100 build.
+
+A ptxas verbose build with the 64-register cap showed no spills in the active
+one-token MoE decode kernels. `moe_down_qwarp32_kernel` used 64 registers with
+zero spill stores/loads, and the fused
+`moe_gate_up_midq_decode_lut_qwarp32_kernel` is also capped at 64 registers.
+Some batch/tile MoE kernels do spill under the cap, but they are not the current
+short single-token decode path.
+
 The adjacent shared gate/up/SwiGLU fusion should stay enabled. Testing
 `DS4_METAL_DISABLE_SHARED_GATE_UP_SWIGLU_FUSION=1` with the fast shared-down
 setting produced only noise-level direct throughput (`13.14 t/s` on ai-smil2)
