@@ -4485,8 +4485,6 @@ __global__ static void compressor_shift_ratio4_kernel(float *state_kv, float *st
     float s = state_score[half + i];
     state_kv[i] = v;
     state_score[i] = s;
-    state_kv[half + i] = v;
-    state_score[half + i] = s;
 }
 
 __device__ static float softplus_dev(float x) {
