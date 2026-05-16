@@ -15,6 +15,7 @@ development, one-off overrides, and customized launches.
 - Context: `131072`
 - KV disk budget: `16384 MiB`
 - GPU split: `DS4_CUDA_TENSOR_SPLIT=8.2,8.2,8.2,8.2`
+- Decode-speed override: `DS4_METAL_DISABLE_SHARED_DOWN_HC_FUSION=1`
 
 The DS4 context default is intentionally 128K. DS4 decode speed is sensitive to
 VRAM pressure because larger context buffers compete with CUDA-side caches. Use
@@ -35,6 +36,12 @@ Do not run the deprecated llama.cpp `rpc-server` beside production DS4. On
 restarting `ds4-server.service`, warm 200-token non-thinking chat requests
 improved from about 11.5-11.7 tok/s wall-clock to 12.5-12.6 tok/s wall-clock,
 with server-side decode logging 12.98-13.05 tok/s.
+
+On 2026-05-16, after making
+`DS4_METAL_DISABLE_SHARED_DOWN_HC_FUSION=1` the DS4 script default, the systemd
+environment confirmed the override and a warm 200-token request at 128K context
+logged `13.28 t/s` for the first 50-token chunk and `12.99 t/s` average over
+200 tokens. The direct 32K CLI benchmark remains faster at about `13.20 t/s`.
 
 ### Qwen
 
