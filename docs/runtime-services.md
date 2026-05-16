@@ -48,6 +48,11 @@ a warm 200-token `ds4-server.service` request at 128K context logged
 `14.30 t/s` for the first 50-token chunk and `13.81 t/s` average over 200
 tokens. The direct 32K CLI benchmark measured about `14.04-14.09 t/s`.
 
+After the later 128-row MoE down default plus one-token cuBLAS attention-output
+A, a warm 200-token `ds4-server.service` request at 128K context logged
+`14.97 t/s` for the first 50-token chunk and `14.61 t/s` average over 200
+tokens. The direct 32K CLI benchmark measured about `14.83-14.88 t/s`.
+
 ### Qwen
 
 - Node: `ai-smil1`
