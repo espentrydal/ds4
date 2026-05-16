@@ -140,6 +140,42 @@ direct benchmark. The systemd service path on ai-smil2, at the production 128K
 context, logged `14.97 t/s` for the first 50-token chunk and `14.61 t/s`
 average over 200 generated tokens.
 
+The final step to 15 tok/s was increasing the fused MoE gate/up+midq decode
+kernel from 256 to 512 threads while keeping the same 256-row Q8_K output tile.
+This gives each block 64 quarter-warps and four serial rows per quarter-warp
+instead of 32 quarter-warps and eight serial rows. The old 256-thread path is
+available for comparison with `DS4_CUDA_MOE_GATEUP_THREADS256=1`.
+
+Standard 200-token direct checks with the 512-thread gate/up default measured
+`15.09 t/s` on ai-smil1 and `15.02 t/s` on ai-smil2. A same-binary 64-token
+output comparison between the 512-thread default and
+`DS4_CUDA_MOE_GATEUP_THREADS256=1` matched exactly (`cmp` exit 0). The short
+comparison measured `15.23 t/s` for the 512-thread default and `15.12 t/s` for
+the old 256-thread path.
+
+A synchronized ai-smil2 profile of the new default measured MoE subtotals:
+
+```text
+total   0.407 ms/layer
+gateup  0.212 ms/layer
+down    0.165 ms/layer
+xq      0.016 ms/layer
+sum     0.009 ms/layer
+midq    0.002 ms/layer
+sort    0.002 ms/layer
+```
+
+The same profile showed the remaining largest layer buckets:
+
+```text
+routed_moe          0.483 ms/layer
+attn_output         0.284 ms/layer
+q_path              0.189 ms/layer
+compressor_indexer  0.154 ms/layer
+shared_gate_up      0.100 ms/layer
+shared_down         0.068 ms/layer
+```
+
 F16-cache reserve tuning was rechecked again after rows128 and one-token
 cuBLAS A. `DS4_CUDA_Q8_F16_CACHE_RESERVE_MB=3072` measured `14.84 t/s`,
 `2048` produced one `14.91 t/s` run, and lower reserve checks at `1536` and
