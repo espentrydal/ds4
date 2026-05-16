@@ -257,6 +257,13 @@ B/HC expand. It was still worse (`14.15` vs `14.62 t/s` on ai-smil1) and the
 64-token output differed from the reference path (`cmp` exit 1), so the source
 was reverted.
 
+Additional attention-output fallbacks were checked without source changes.
+`DS4_CUDA_NO_CUBLAS_ATTENTION_OUTPUT_A=1` preserved the 64-token output exactly
+but regressed to `14.41 t/s`, so the cached F16/cuBLAS A projection remains
+better. `DS4_CUDA_NO_ATTENTION_OUTPUT_F16_CACHE=1` changed the output hash and
+also measured only `14.40 t/s`, so disabling the attention-output F16 cache is
+neither a correctness-preserving nor a speed route.
+
 Two projection toggles were checked after the post-upstream baseline and should
 remain off. `DS4_METAL_DISABLE_COMPRESSOR_PAIR_PROJ=1` measured `15.03 t/s`,
 below the default band. `DS4_CUDA_F16_PAIR_MATMUL=1` measured `11.76 t/s`, so
