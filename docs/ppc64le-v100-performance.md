@@ -141,6 +141,12 @@ the fast default. It is still required for speed: `DS4_CUDA_DISABLE_QKV_PAIR_PRO
 raised `q_path` from about `0.186 ms/layer` to `0.253 ms/layer`, and direct
 200-token decode on ai-smil2 dropped to `12.89 t/s`.
 
+F16 cache reserve tuning was also rechecked after the shared-down/HC opt-out.
+`DS4_CUDA_Q8_F16_CACHE_RESERVE_MB=3072` measured `13.21 t/s`, and `2048`
+measured `13.22 t/s`, while a same-node default rerun measured `13.19 t/s`.
+That is within the current run-to-run band, so reserve tuning remains a
+low-priority route rather than a production-default change.
+
 One-token decode now uses cached F16/cuBLAS for eligible Q8 projections by
 default, with `DS4_CUDA_NO_Q8_F16_GEMV=1` as the opt-out. This moved the
 96-token check from `11.48 t/s` with the opt-out to `12.58 t/s` by cutting the
