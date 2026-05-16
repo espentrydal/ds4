@@ -268,3 +268,29 @@ After the V100 register cap, 128-row MoE down, one-token cuBLAS-A, and
 3. compressor/cache-update fusion as a secondary route,
 4. long-context indexer top-k work only if long-context decode becomes the main
    target.
+
+## 2026-05-16 Post-Upstream 18 tok/s Probes
+
+After cherry-picking selected upstream runtime/server commits from `origin/main`,
+the 4-GPU direct benchmark still measured `15.06 t/s` on ai-smil1 and
+`15.05 t/s` on ai-smil2.
+
+Three quick routes did not justify default changes:
+
+- `DS4_CUDA_NO_CUBLAS_ATTENTION_OUTPUT_B=1` was tested as a temporary B-only
+  attention-output opt-out. Output matched the default, but the short check was
+  slightly slower (`15.24` vs `15.27 t/s`), so the generic cached-F16/cuBLAS B
+  path should stay enabled.
+- A temporary 1024-thread fused MoE gate/up+midq kernel matched output but
+  regressed the short check (`15.10` vs `15.25 t/s`). The 512-thread kernel
+  remains the V100 sweet spot.
+- Rechecking the V100 ptxas cap after the 512-thread kernel and upstream picks
+  measured `15.13 t/s` with `maxrregcount=60` and `15.10 t/s` with the forced
+  default `64` build. This is still noise-level; keep the safer 64-register
+  default unless a longer cross-node check proves otherwise.
+
+The 18 tok/s target still needs a structural reduction in layer-loop latency,
+not another small flag. The most plausible remaining source-level routes are a
+new MoE gate/up or down design, an attention-output A/B/HC pipeline fusion that
+does not repeat the older regressing fusion, or compressor/cache-update kernel
+fusion.
