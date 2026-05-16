@@ -128,6 +128,12 @@ smaller sum stage for a larger down stage. Attention-output follow-ups were
 also flat: one-token cuBLAS for `attn_output_a` and opt-in F16 output-head
 caching did not produce a meaningful speedup.
 
+A later recheck of `DS4_CUDA_NO_ATTENTION_OUTPUT_F16_CACHE=1` showed why this
+should not become a production default. The synchronized profile improved
+`attn_output` from `0.279 ms/layer` to `0.269 ms/layer`, but same-node direct
+200-token generation moved the wrong way, from `12.64 t/s` default to
+`12.55 t/s` with attention-output F16 caching disabled.
+
 Output-head follow-up timings from direct CLI runs with `DS4_OUTPUT_HEAD_PROFILE=1`:
 
 ```text
