@@ -259,6 +259,9 @@ head fan-out, uses CUDA devices `0,1,2,3`, and keeps a disk KV cache under
 `$HOME/ds4-kv`. Override paths and sizing with `DS4_MODEL`, `DS4_HOST`,
 `DS4_PORT`, `DS4_CTX`, `DS4_KV_DIR`, or `DS4_KV_MB`.
 
+Use `--chdir /path/to/ds4` when launching `ds4-server` from another directory,
+so relative runtime files such as `metal/*.metal` resolve from the project tree.
+
 The server keeps one mutable backend/KV checkpoint in memory,
 so stateless clients that resend a longer version of the same prompt can reuse
 the shared prefix instead of pre-filling from token zero.
@@ -294,6 +297,11 @@ clients. It accepts `system`, `messages`, `tools`, `tool_choice`, `max_tokens`,
 `temperature`, `top_p`, `top_k`, `stream`, `stop_sequences`, and thinking
 controls. Tool uses are returned as Anthropic `tool_use` blocks.
 
+Default sampled API generation uses `temperature=1`, `top_p=1`, and
+`min_p=0.05`, so the default filter is relative probability rather than
+nucleus mass. In thinking mode DS4 uses those fixed sampling defaults and
+ignores client sampling knobs, matching DeepSeek's fixed-thinking API behavior.
+
 The chat, Responses, and Anthropic endpoints support SSE streaming. In thinking
 mode, reasoning is streamed in the native API shape instead of being mixed into
 final text. OpenAI chat streaming
@@ -306,6 +314,11 @@ The Responses endpoint streams the Responses event lifecycle expected by Codex,
 including `response.output_text.delta`, function-call argument events, and
 terminal `response.completed` / `response.incomplete` / `response.failed`
 events.
+
+For browser JavaScript clients served from another origin, start the server with
+`--cors` to emit `Access-Control-Allow-*` headers. This only changes HTTP
+headers; it does not expose the server on the LAN. Use `--host 0.0.0.0`
+explicitly when remote machines should be able to connect.
 
 ### Tool call handling and canonicalization
 
