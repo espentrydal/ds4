@@ -31,6 +31,14 @@ explicit fast MoE SILU, and a shared-`midq` decode down kernel. None improved
 the service path beyond the roughly 13 tok/s server-side result; several
 regressed.
 
+A 2026-05-16 follow-up added `DS4_OUTPUT_HEAD_PROFILE=1` to isolate the final
+output head. This profiler synchronizes before the output head and between
+substeps, so it is for diagnosis rather than speed measurement. It showed final
+output logits at roughly `67 ms/token`, making output logits a real target.
+However, disabling split output was slightly slower, and the opt-in
+`DS4_CUDA_OUTPUT_F16_CACHE=1` path did not help even when a lower cache reserve
+allowed all four output split segments to be cached as F16.
+
 ## Current Profile
 
 Profile command used the same fast CUDA split plus:
@@ -95,6 +103,19 @@ direct-sum6, no-LUT gate/up, and a temporary atomic-down experiment all
 regressed. Attention-output follow-ups were also flat: one-token cuBLAS for
 `attn_output_a` and opt-in F16 output-head caching did not produce a meaningful
 speedup.
+
+Output-head follow-up timings from direct CLI runs with `DS4_OUTPUT_HEAD_PROFILE=1`:
+
+```text
+split output default:   generation 13.35 t/s, logits 67.256 ms/token
+split output disabled:  generation 13.30 t/s, logits 68.046 ms/token
+output F16 cache:       generation 13.29 t/s, logits 69.181 ms/token
+```
+
+The F16 output cache run used `DS4_CUDA_OUTPUT_F16_CACHE=1` and
+`DS4_CUDA_Q8_F16_CACHE_RESERVE_MB=512`; logs confirmed four cached
+`252.50 MiB` output split segments. It still regressed, so this is not a
+promising production default.
 
 The routed MoE decode path now fuses the gate/up result directly into Q8_K
 `midq` blocks, avoiding the separate global `mid` materialization and quantize
