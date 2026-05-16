@@ -584,6 +584,9 @@ static int cuda_q8_f16_cache_allowed(const char *label, uint64_t in_dim, uint64_
     if (cuda_q8_f16_cache_limit_bytes() == 0) return 0;
     if (getenv("DS4_CUDA_Q8_F16_ALL") != NULL) return 1;
     if (!label) return 0;
+    if (strstr(label, "output_split") != NULL || strcmp(label, "output") == 0) {
+        return getenv("DS4_CUDA_OUTPUT_F16_CACHE") != NULL;
+    }
     if (strstr(label, "attn_output_a") != NULL ||
         strstr(label, "attn_output_b") != NULL ||
         strstr(label, "attention_output_a") != NULL ||
