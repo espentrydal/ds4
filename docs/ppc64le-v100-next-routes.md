@@ -308,6 +308,10 @@ Additional topology and projection checks also did not produce a route:
   failures and then generated only `7.10 t/s` and `6.45 t/s`. The fourth GPU is
   needed for resident weights/cache headroom; removing a cross-pair handoff does
   not pay for losing that memory.
+- `DS4_CUDA_SYNC_DEVICE_SWITCH=1` was flat against the default event-based
+  cross-device handoff in a direct ai-smil1 200-token check (`14.60 t/s` for
+  both modes). The device-switch synchronization mode should stay on the default
+  event path.
 - `DS4_METAL_DISABLE_COMPRESSOR_PAIR_PROJ=1` measured `15.03 t/s`, below the
   current default band, so compressor pair projection should stay enabled.
 - `DS4_CUDA_F16_PAIR_MATMUL=1` measured `11.76 t/s`, far below the current

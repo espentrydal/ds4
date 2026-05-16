@@ -206,6 +206,12 @@ Three-GPU layouts were also rejected. `DS4_CUDA_DEVICES=0,1,2` and
 residency and then generated only `7.10 t/s` and `6.45 t/s`. Keeping all four
 V100s is necessary even though it leaves one cross-pair handoff.
 
+The device-switch synchronization mode was checked directly. The default path
+records an event on the previous GPU stream and waits on it from the next GPU;
+`DS4_CUDA_SYNC_DEVICE_SWITCH=1` replaces that with a full device synchronize at
+each handoff. In a direct ai-smil1 200-token comparison both measured
+`14.60 t/s`, so the default event-based handoff remains the right setting.
+
 Two projection toggles were checked after the post-upstream baseline and should
 remain off. `DS4_METAL_DISABLE_COMPRESSOR_PAIR_PROJ=1` measured `15.03 t/s`,
 below the default band. `DS4_CUDA_F16_PAIR_MATMUL=1` measured `11.76 t/s`, so
