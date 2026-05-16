@@ -27,6 +27,11 @@ shared_down         0.068 ms/layer
    on ai-smil1 and `12.55 -> 13.09 t/s` on ai-smil2. The separate shared-down
    and HC-post path is faster than the older fused path.
 
+   Keep the adjacent shared gate/up/SwiGLU fusion enabled. Its opt-out,
+   `DS4_METAL_DISABLE_SHARED_GATE_UP_SWIGLU_FUSION=1`, worsened the profiled
+   `shared_gate_up` bucket (`0.100 -> 0.114 ms/layer`) and did not show a clear
+   direct-generation win.
+
 1. Routed-MoE down/gate-up kernel work.
 
    This remains the largest bucket. The fused midq kernel helped, but MoE is
