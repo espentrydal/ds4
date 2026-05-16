@@ -364,6 +364,10 @@ Additional topology and projection checks also did not produce a route:
   256-thread half of the 512-thread block. It preserved the deterministic output
   hashes for 64-token and 200-token checks, but measured only `14.65 t/s` and
   `14.55 t/s`, so the source was reverted.
+- Existing compressor/indexer fallbacks were spot-checked and rejected.
+  `DS4_CUDA_NO_INDEXER_DIRECT_ONE=1`, `DS4_CUDA_NO_TOPK1024=1`, and
+  `DS4_CUDA_NO_TOPK2048=1` all preserved the deterministic 64-token output hash,
+  but measured only `14.61`, `14.62`, and `14.61 t/s` respectively.
 
 ## 2026-05-16 Luce Megakernel Takeaways
 
