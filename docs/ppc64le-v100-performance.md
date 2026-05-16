@@ -39,6 +39,12 @@ output-logits average was dominated by the first lazy output-weight cache during
 prefill. Warm generated-token split output is only about `1.35 ms`, so output
 logits are not a meaningful route to 15 tok/s.
 
+The same follow-up checked MoE row-span variants. `DS4_CUDA_MOE_DOWN_ROW1024=1`
+was flat (`down=0.296 ms`, `total=0.587 ms`), `DS4_CUDA_MOE_DOWN_ROW512=1`
+regressed (`down=0.300 ms`, `total=0.594 ms`), and gate row 512/2048 variants
+left `gateup` around `0.261 ms`. The row-span toggles are not a route to 15
+tok/s.
+
 ## Current Profile
 
 Profile command used the same fast CUDA split plus:

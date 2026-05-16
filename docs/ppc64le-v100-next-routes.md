@@ -119,6 +119,10 @@ dev-node sweep did not find a safe route to 15 tok/s:
   baseline (`67.02 ms` vs `67.10 ms` logits) and was reverted.
 - A temporary full-block DP4A output Q8 specialization was also flat
   (`67.09 ms` including the cold call) and was reverted.
+- MoE row-span toggles were flat or worse: `DS4_CUDA_MOE_DOWN_ROW1024=1`
+  measured `down=0.296 ms` and `total=0.587 ms`, `DOWN_ROW512` regressed to
+  `down=0.300 ms`, and gate row 512/2048 both left `gateup` around
+  `0.261 ms`.
 
 The latest dev profile still points to routed MoE as the realistic large
 single-node target. Reaching 15 tok/s likely needs a new MoE down projection
