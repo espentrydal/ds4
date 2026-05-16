@@ -189,6 +189,11 @@ dev-node sweep did not find a safe route to 15 tok/s:
 - ptxas `-dlcm=ca` and `-dlcm=cg` cache modifiers did not improve the
   64-register build. `ca` matched the best ai-smil1 long run but regressed
   ai-smil2; `cg` was also below the default path.
+- `--extra-device-vectorization` was mixed and should not be a default. It
+  improved one short ai-smil1 run but missed on longer/swap checks.
+- ptxas verbose output showed no spills in the active one-token MoE decode
+  kernels under the 64-register cap. Spilling exists in some batch/tile MoE
+  kernels, but those are not the current single-token decode bottleneck.
 
 The latest dev profile still points to routed MoE as the realistic large
 single-node target. Reaching 15 tok/s likely needs a new MoE down projection
