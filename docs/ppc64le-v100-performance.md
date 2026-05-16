@@ -188,6 +188,30 @@ output but regressed against the 512-thread default. Rechecking
 forced 64-register build (`15.13` vs `15.10 t/s` on ai-smil1), so the V100
 default remains `-Xptxas=-maxrregcount=64`.
 
+The four-GPU placement was checked against the physical topology. Both nodes
+have pairwise NVLink, with GPU0<->GPU1 and GPU2<->GPU3 connected by `NV3`; all
+cross-pair GPU paths are `SYS`. The default `DS4_CUDA_DEVICES=0,1,2,3` already
+uses contiguous layer chunks, giving NVLink, cross-pair, NVLink handoffs across
+the 43 layers. Reordered checks did not improve throughput:
+
+```text
+DS4_CUDA_DEVICES=1,0,2,3  15.06 t/s
+DS4_CUDA_DEVICES=0,1,3,2  15.02 t/s
+DS4_CUDA_DEVICES=1,0,3,2  14.99 t/s
+DS4_CUDA_DEVICES=2,3,0,1  14.81 t/s
+```
+
+Three-GPU layouts were also rejected. `DS4_CUDA_DEVICES=0,1,2` and
+`DS4_CUDA_DEVICES=0,1,3` hit CUDA arena allocation failures for model/cache
+residency and then generated only `7.10 t/s` and `6.45 t/s`. Keeping all four
+V100s is necessary even though it leaves one cross-pair handoff.
+
+Two projection toggles were checked after the post-upstream baseline and should
+remain off. `DS4_METAL_DISABLE_COMPRESSOR_PAIR_PROJ=1` measured `15.03 t/s`,
+below the default band. `DS4_CUDA_F16_PAIR_MATMUL=1` measured `11.76 t/s`, so
+the current two one-token F16/cuBLAS calls are much faster than the
+ordered-chunks F16 pair kernel on this V100 path.
+
 F16-cache reserve tuning was rechecked again after rows128 and one-token
 cuBLAS A. `DS4_CUDA_Q8_F16_CACHE_RESERVE_MB=3072` measured `14.84 t/s`,
 `2048` produced one `14.91 t/s` run, and lower reserve checks at `1536` and
