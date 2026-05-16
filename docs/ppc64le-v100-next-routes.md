@@ -63,7 +63,10 @@ compressor_indexer  0.152 ms/layer
    but `attn_output` is still the second-largest layer bucket. One-token cuBLAS
    for `attn_output_a` was flat, so the likely route is a purpose-built
    out-a/out-b/HC expansion fusion that avoids extra intermediate traffic
-   without repeating the slower older fused path.
+   without repeating the slower older fused path. Disabling attention-output
+   F16 caching improved the synchronized `attn_output` stage, but same-node
+   direct generation regressed (`12.64 -> 12.55 t/s`), so it is not a
+   production-default route.
 
 4. Compressor/indexer path.
 
