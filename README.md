@@ -259,6 +259,9 @@ head fan-out, uses CUDA devices `0,1,2,3`, and keeps a disk KV cache under
 `$HOME/ds4-kv`. Override paths and sizing with `DS4_MODEL`, `DS4_HOST`,
 `DS4_PORT`, `DS4_CTX`, `DS4_KV_DIR`, or `DS4_KV_MB`.
 
+Use `--chdir /path/to/ds4` when launching `ds4-server` from another directory,
+so relative runtime files such as `metal/*.metal` resolve from the project tree.
+
 The server keeps one mutable backend/KV checkpoint in memory,
 so stateless clients that resend a longer version of the same prompt can reuse
 the shared prefix instead of pre-filling from token zero.
