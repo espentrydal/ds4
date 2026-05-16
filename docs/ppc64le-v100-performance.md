@@ -134,6 +134,12 @@ default. `maxrregcount=72` is not valid with the 1024-thread rows128 down
 kernel: it failed with `too many resources requested for launch`. Keep the
 64-register cap.
 
+The default no-env build with rows128 and one-token cuBLAS A rechecked at
+`14.88 t/s` on ai-smil1 and `14.83 t/s` on ai-smil2 for the standard 200-token
+direct benchmark. The systemd service path on ai-smil2, at the production 128K
+context, logged `14.97 t/s` for the first 50-token chunk and `14.61 t/s`
+average over 200 generated tokens.
+
 The adjacent shared gate/up/SwiGLU fusion should stay enabled. Testing
 `DS4_METAL_DISABLE_SHARED_GATE_UP_SWIGLU_FUSION=1` with the fast shared-down
 setting produced only noise-level direct throughput (`13.14 t/s` on ai-smil2)
