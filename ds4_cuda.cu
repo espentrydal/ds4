@@ -7789,12 +7789,12 @@ extern "C" int ds4_gpu_attention_output_q8_batch_tensor(
     }
 
     const __half *out_a_f16 = NULL;
-    uint32_t out_a_cublas_min_tokens = 2u;
+    uint32_t out_a_cublas_min_tokens = 1u;
     const char *out_a_min_env = getenv("DS4_CUDA_ATTENTION_OUTPUT_A_CUBLAS_MIN");
     if (out_a_min_env && out_a_min_env[0]) {
         char *endp = NULL;
         long v = strtol(out_a_min_env, &endp, 10);
-        if (endp != out_a_min_env && v > 1 && v < 4096) out_a_cublas_min_tokens = (uint32_t)v;
+        if (endp != out_a_min_env && v >= 1 && v < 4096) out_a_cublas_min_tokens = (uint32_t)v;
     }
     if (!g_quality_mode &&
         g_cublas_ready &&

@@ -119,6 +119,21 @@ did not help. `DS4_CUDA_Q8_WARP_ROWS16=1` measured `14.51 t/s`, and
 `DS4_CUDA_Q8_WARP_ROWS32=1` measured `14.39 t/s`, both below the rows128 MoE
 default path. The temporary Q8 row-shape code was reverted.
 
+The attention-output A projection now uses the existing F16/cuBLAS path for
+one-token decode as well as prefill/batch work. After allowing
+`DS4_CUDA_ATTENTION_OUTPUT_A_CUBLAS_MIN=1`, 200-token direct checks measured
+`14.85 t/s` on ai-smil1 and `14.79 t/s` on ai-smil2; a 500-token ai-smil1 run
+measured `14.75 t/s`. A same-binary 64-token output comparison between the old
+Q8 decode path and cuBLAS A matched exactly (`cmp` exit 0), and the cuBLAS A
+run measured `15.06 t/s` on that short check. The default threshold is now 1;
+raise `DS4_CUDA_ATTENTION_OUTPUT_A_CUBLAS_MIN` only for comparison.
+
+The V100 register cap was rechecked after rows128 and one-token cuBLAS A.
+`maxrregcount=60` measured `14.83 t/s`, essentially matching the 64-register
+default. `maxrregcount=72` is not valid with the 1024-thread rows128 down
+kernel: it failed with `too many resources requested for launch`. Keep the
+64-register cap.
+
 The adjacent shared gate/up/SwiGLU fusion should stay enabled. Testing
 `DS4_METAL_DISABLE_SHARED_GATE_UP_SWIGLU_FUSION=1` with the fast shared-down
 setting produced only noise-level direct throughput (`13.14 t/s` on ai-smil2)
