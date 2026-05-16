@@ -180,6 +180,17 @@ After selected upstream runtime/server commits from `origin/main` were
 cherry-picked into `ppc64le`, the 4-GPU direct 200-token benchmark still
 measured `15.06 t/s` on ai-smil1 and `15.05 t/s` on ai-smil2.
 
+An upstream audit with `git cherry -v ppc64le origin/main` still reports some
+main commits as patch-positive because our branch carries conflict-adjusted
+cherry-picks with different SHAs. Subject checks confirmed local equivalents for
+the useful runtime/server changes, including KV cache usage reporting, Anthropic
+tool-call streaming/replay fixes, managed KV cache, context-length errors, KV
+cache eviction/hit decay, tool schema rendering, literal tool-result handling,
+CORS support, min-p default sampling, and the ds4-server working-directory
+option. The remaining main-only commits are eval harness/model-card/imatrix or
+README-style changes that were intentionally not pulled into the ppc64le runtime
+work.
+
 A later ai-smil1 profile on the clean current binary with 32 generated tokens
 and attention-output profiling still showed the same ranking:
 `routed_moe=0.479 ms/layer`, `attn_output=0.281 ms/layer`,
@@ -201,6 +212,10 @@ measured `13.31 t/s`, `DS4_CUDA_MOE_DOWN_ROWS32=1` measured `13.38 t/s`,
 `DS4_CUDA_MOE_DOWN_ROWS64=1` measured `13.99 t/s`, and
 `DS4_CUDA_MOE_DOWN_ROWS96=1` measured `14.04 t/s`. The default 128-row down
 decode path remains the right choice.
+
+The decode-LUT gate path is also necessary. `DS4_CUDA_MOE_NO_DECODE_LUT_GATE=1`
+matched the 64-token output exactly but dropped to `9.88 t/s`, far below the
+default path.
 
 A temporary `DS4_CUDA_FUSE_Q_NORM_ROPE=1` decode path used the existing fused
 head-RMS+RoPE CUDA kernel for Q. It matched the default 64-token output exactly

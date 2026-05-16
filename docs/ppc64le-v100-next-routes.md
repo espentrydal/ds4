@@ -279,6 +279,13 @@ After cherry-picking selected upstream runtime/server commits from `origin/main`
 the 4-GPU direct benchmark still measured `15.06 t/s` on ai-smil1 and
 `15.05 t/s` on ai-smil2.
 
+`git cherry -v ppc64le origin/main` was rechecked after the later performance
+probes. Several useful runtime/server subjects still show as patch-positive only
+because the local branch carries conflict-adjusted cherry-pick equivalents with
+different SHAs. Subject checks found local equivalents for the runtime/server
+commits we wanted; the remaining main-only work is eval/model-card/imatrix or
+README-oriented and remains intentionally skipped for the ppc64le runtime path.
+
 Three quick routes did not justify default changes:
 
 - `DS4_CUDA_NO_CUBLAS_ATTENTION_OUTPUT_B=1` was tested as a temporary B-only
@@ -333,6 +340,8 @@ Additional topology and projection checks also did not produce a route:
   `DS4_CUDA_MOE_DOWN_ROWS96=1` all matched the default output, but measured
   `13.31`, `13.38`, `13.99`, and `14.04 t/s` respectively on 64-token checks.
   The default 128-row decode down path remains best among the existing knobs.
+- `DS4_CUDA_MOE_NO_DECODE_LUT_GATE=1` matched output exactly but fell to
+  `9.88 t/s`, so the decode LUT gate path is required.
 - `DS4_CUDA_FUSE_Q_NORM_ROPE=1` was tested as a temporary source change using
   the existing fused Q head-RMS+RoPE CUDA kernel. It matched output exactly and
   shaved only about `0.004 ms/layer` from `q_path`; the 200-token direct run
