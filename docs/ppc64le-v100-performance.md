@@ -98,6 +98,17 @@ zero spill stores/loads, and the fused
 Some batch/tile MoE kernels do spill under the cap, but they are not the current
 short single-token decode path.
 
+A 2026-05-16 source-level MoE down shape check found the next real gain. The
+old decode down kernel processed 32 output rows per block with 256 threads. An
+otherwise identical 64-row/512-thread shape reduced the synchronized MoE down
+bucket from about `0.318 ms/layer` to `0.236 ms/layer`, reducing routed MoE
+from about `0.662 ms/layer` to `0.579 ms/layer`. Direct 200-token checks
+measured `13.96 t/s` on ai-smil1 and `14.03 t/s` on ai-smil2; a 500-token
+ai-smil2 run measured `14.01 t/s`. A same-binary 32-token output comparison
+between the old and new paths matched exactly (`cmp` exit 0). The 64-row shape
+is now the default; set `DS4_CUDA_MOE_DOWN_ROWS32=1` only to compare with the
+older kernel.
+
 The adjacent shared gate/up/SwiGLU fusion should stay enabled. Testing
 `DS4_METAL_DISABLE_SHARED_GATE_UP_SWIGLU_FUSION=1` with the fast shared-down
 setting produced only noise-level direct throughput (`13.14 t/s` on ai-smil2)
