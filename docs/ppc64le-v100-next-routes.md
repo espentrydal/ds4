@@ -135,6 +135,10 @@ shared_down         0.068 ms/layer
    needs to reduce the whole A/B/HC pipeline rather than one subprojection. The
    existing `DS4_METAL_ENABLE_ATTN_OUT_HC_FUSION=1` path was rechecked on the
    current build and still regressed (`12.64 -> 12.19 t/s` direct decode).
+   A later temporary variant let the opt-in HC-fused path use the cached
+   F16/cuBLAS A projection before the fused Q8 B/HC expand. It still regressed
+   (`14.15` vs `14.62 t/s` on the short ai-smil1 check) and did not match the
+   reference output (`cmp` exit 1), so it was reverted.
 
 7. Compressor/indexer path.
 
