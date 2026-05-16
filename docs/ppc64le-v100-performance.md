@@ -110,12 +110,15 @@ Output-head follow-up timings from direct CLI runs with `DS4_OUTPUT_HEAD_PROFILE
 split output default:   generation 13.35 t/s, logits 67.256 ms/token
 split output disabled:  generation 13.30 t/s, logits 68.046 ms/token
 output F16 cache:       generation 13.29 t/s, logits 69.181 ms/token
+half-warp output Q8:    generation 13.39 t/s, logits 67.024 ms/token
+same-node baseline:     generation 13.32 t/s, logits 67.099 ms/token
 ```
 
 The F16 output cache run used `DS4_CUDA_OUTPUT_F16_CACHE=1` and
 `DS4_CUDA_Q8_F16_CACHE_RESERVE_MB=512`; logs confirmed four cached
 `252.50 MiB` output split segments. It still regressed, so this is not a
-promising production default.
+promising production default. A temporary half-warp output Q8 kernel was flat
+within measurement noise and was reverted.
 
 The routed MoE decode path now fuses the gate/up result directly into Q8_K
 `midq` blocks, avoiding the separate global `mid` materialization and quantize
