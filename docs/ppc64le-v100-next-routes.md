@@ -351,6 +351,9 @@ Additional topology and projection checks also did not produce a route:
   `DS4_CUDA_NO_ATTENTION_OUTPUT_F16_CACHE=1` changed output while measuring
   `14.40 t/s`. Keep the cached F16/cuBLAS A projection and attention-output F16
   cache enabled.
+- `DS4_CUDA_Q8_F32_LARGE=1` was rejected for the attention-output B-sized path:
+  it changed output, caused a CUDA model arena allocation failure for `moe_down`,
+  and measured only `12.31 t/s`.
 - `DS4_METAL_DISABLE_COMPRESSOR_PAIR_PROJ=1` measured `15.03 t/s`, below the
   current default band, so compressor pair projection should stay enabled.
 - `DS4_CUDA_F16_PAIR_MATMUL=1` measured `11.76 t/s`, far below the current
