@@ -328,6 +328,11 @@ Additional topology and projection checks also did not produce a route:
   compressor pool, RMS+weight, and RoPE. It matched default output exactly on
   64-token and 200-token checks, but the 200-token direct run only moved from
   `14.64` to `14.66 t/s`. That is noise-level, so the source was reverted.
+- Existing MoE down-kernel toggles were rejected. `DS4_CUDA_MOE_DIRECT_DOWN_SUM6=1`,
+  `DS4_CUDA_MOE_DOWN_ROWS32=1`, `DS4_CUDA_MOE_DOWN_ROWS64=1`, and
+  `DS4_CUDA_MOE_DOWN_ROWS96=1` all matched the default output, but measured
+  `13.31`, `13.38`, `13.99`, and `14.04 t/s` respectively on 64-token checks.
+  The default 128-row decode down path remains best among the existing knobs.
 - `DS4_METAL_DISABLE_COMPRESSOR_PAIR_PROJ=1` measured `15.03 t/s`, below the
   current default band, so compressor pair projection should stay enabled.
 - `DS4_CUDA_F16_PAIR_MATMUL=1` measured `11.76 t/s`, far below the current

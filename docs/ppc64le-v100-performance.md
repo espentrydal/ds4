@@ -180,6 +180,13 @@ After selected upstream runtime/server commits from `origin/main` were
 cherry-picked into `ppc64le`, the 4-GPU direct 200-token benchmark still
 measured `15.06 t/s` on ai-smil1 and `15.05 t/s` on ai-smil2.
 
+A later ai-smil1 profile on the clean current binary with 32 generated tokens
+and attention-output profiling still showed the same ranking:
+`routed_moe=0.479 ms/layer`, `attn_output=0.281 ms/layer`,
+`q_path=0.189 ms/layer`, and `compressor_indexer=0.141 ms/layer`. The MoE
+subtotals were `gateup=0.207 ms/layer`, `down=0.165 ms/layer`, and
+`total=0.402 ms/layer`.
+
 Follow-up 18 tok/s probes did not produce another default change. A temporary
 B-only attention-output cuBLAS opt-out matched output but was slightly slower
 than the default. A temporary 1024-thread MoE gate/up+midq kernel also matched
@@ -187,6 +194,13 @@ output but regressed against the 512-thread default. Rechecking
 `maxrregcount=60` after the upstream picks was only noise-level better than the
 forced 64-register build (`15.13` vs `15.10 t/s` on ai-smil1), so the V100
 default remains `-Xptxas=-maxrregcount=64`.
+
+Existing MoE down-kernel toggles were checked next. All matched the default
+64-token output exactly, but all regressed: `DS4_CUDA_MOE_DIRECT_DOWN_SUM6=1`
+measured `13.31 t/s`, `DS4_CUDA_MOE_DOWN_ROWS32=1` measured `13.38 t/s`,
+`DS4_CUDA_MOE_DOWN_ROWS64=1` measured `13.99 t/s`, and
+`DS4_CUDA_MOE_DOWN_ROWS96=1` measured `14.04 t/s`. The default 128-row down
+decode path remains the right choice.
 
 A temporary intermediate 768-thread MoE gate/up+midq kernel was tested after the
 device-switch check. It was not usable: the short direct comparison was flat
