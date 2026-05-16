@@ -176,6 +176,18 @@ shared_gate_up      0.100 ms/layer
 shared_down         0.068 ms/layer
 ```
 
+After selected upstream runtime/server commits from `origin/main` were
+cherry-picked into `ppc64le`, the 4-GPU direct 200-token benchmark still
+measured `15.06 t/s` on ai-smil1 and `15.05 t/s` on ai-smil2.
+
+Follow-up 18 tok/s probes did not produce another default change. A temporary
+B-only attention-output cuBLAS opt-out matched output but was slightly slower
+than the default. A temporary 1024-thread MoE gate/up+midq kernel also matched
+output but regressed against the 512-thread default. Rechecking
+`maxrregcount=60` after the upstream picks was only noise-level better than the
+forced 64-register build (`15.13` vs `15.10 t/s` on ai-smil1), so the V100
+default remains `-Xptxas=-maxrregcount=64`.
+
 F16-cache reserve tuning was rechecked again after rows128 and one-token
 cuBLAS A. `DS4_CUDA_Q8_F16_CACHE_RESERVE_MB=3072` measured `14.84 t/s`,
 `2048` produced one `14.91 t/s` run, and lower reserve checks at `1536` and
