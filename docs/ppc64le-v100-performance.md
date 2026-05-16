@@ -114,6 +114,11 @@ or `DS4_CUDA_MOE_DOWN_ROWS32=1` only for comparisons with the older kernels.
 The default no-env build rechecked at `14.61 t/s` on ai-smil1 and `14.64 t/s`
 on ai-smil2 for the standard 200-token direct benchmark.
 
+A follow-up Q8 warp-row geometry check for attention-output/general Q8 kernels
+did not help. `DS4_CUDA_Q8_WARP_ROWS16=1` measured `14.51 t/s`, and
+`DS4_CUDA_Q8_WARP_ROWS32=1` measured `14.39 t/s`, both below the rows128 MoE
+default path. The temporary Q8 row-shape code was reverted.
+
 The adjacent shared gate/up/SwiGLU fusion should stay enabled. Testing
 `DS4_METAL_DISABLE_SHARED_GATE_UP_SWIGLU_FUSION=1` with the fast shared-down
 setting produced only noise-level direct throughput (`13.14 t/s` on ai-smil2)
