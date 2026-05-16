@@ -3,21 +3,26 @@
 Current best verified default one-node decode result:
 
 ```text
-ds4: prefill: 0.15 t/s, generation: 14.88 t/s
+ai-smil1: ds4: prefill: 0.15 t/s, generation: 15.09 t/s
+ai-smil2: ds4: prefill: 0.15 t/s, generation: 15.02 t/s
 ```
+
+The 15 tok/s direct 200-token target is reached by making the fused MoE
+gate/up+midq decode kernel use 512 threads per 256-row Q8_K block. The old
+256-thread kernel remains available for comparison with
+`DS4_CUDA_MOE_GATEUP_THREADS256=1`.
 
 The best reserve-tuning one-off measured `14.91 t/s`, but follow-up lower
 reserve checks landed at `14.82-14.83 t/s`, so reserve tuning is not a default
-route. Getting the main 200-token benchmark to 15 tok/s now requires roughly a
-1 percent token-latency reduction from the current path. The latest synchronized
-profile still has most remaining time inside the layer loop:
+route. The latest synchronized profile still has most remaining time inside the
+layer loop:
 
 ```text
-routed_moe          0.506 ms/layer
-attn_output         0.277 ms/layer
+routed_moe          0.483 ms/layer
+attn_output         0.284 ms/layer
 q_path              0.189 ms/layer
-compressor_indexer  0.152 ms/layer
-shared_gate_up      0.103 ms/layer
+compressor_indexer  0.154 ms/layer
+shared_gate_up      0.100 ms/layer
 shared_down         0.068 ms/layer
 ```
 
@@ -65,21 +70,24 @@ shared_down         0.068 ms/layer
    comparison. `DS4_CUDA_MOE_DOWN_ROWS96=1` also exists as a comparison path,
    but it was flat with rows64 and is not documented as a tuning target.
 
-3. Routed-MoE gate-up kernel work.
+3. Keep the 512-thread MoE gate/up+midq decode kernel.
 
-   MoE remains the largest bucket. After the 128-row down change, gate/up is
-   again larger than down:
+   MoE remains the largest bucket, but the 512-thread gate/up variant is the
+   change that pushed the main benchmark over 15 tok/s. It keeps the same
+   256-row Q8_K output tile, but uses 64 quarter-warps per block and four
+   serial rows per quarter-warp instead of 32 quarter-warps and eight serial
+   rows. The old path is available with `DS4_CUDA_MOE_GATEUP_THREADS256=1`.
 
    ```text
-   gateup  0.237 ms/layer
-   down    0.162 ms/layer
+   gateup  0.212 ms/layer
+   down    0.165 ms/layer
+   total   0.407 ms/layer
    ```
 
    Simple earlier variants already regressed: direct sum6, atomic down, no-LUT
    gate/up, constant-memory LUT lookup, half/full-warp down kernels, and a
-   5-row x 6-slot direct-sum down kernel. Further gains probably need work on
-   the fused gate/up+midq kernel, or another down shape that beats the new
-   64-row default.
+   5-row x 6-slot direct-sum down kernel. Further gains probably need another
+   fused gate/up+midq shape or a down shape that beats rows128.
 
 4. Split-output cold-start instrumentation.
 
@@ -238,10 +246,10 @@ dev-node sweep did not find a safe route to 15 tok/s:
   better than noise, and lower `1536`/`1024` checks measured `14.83` and
   `14.82 t/s`.
 
-The latest dev profile still points to routed MoE as the realistic large
-single-node target, with attention output also still significant. Reaching
-15 tok/s on the main 200-token benchmark likely needs a smaller additional gain
-from MoE gate/up, attention output B, or compressor/cache-update work.
+The latest dev profile still points to routed MoE as the largest remaining
+single-node target, with attention output also significant. The main 200-token
+benchmark now reaches 15 tok/s, but further headroom would likely come from MoE
+gate/up, attention output B, or compressor/cache-update work.
 
 ## 2026-05-16 Indexer Check
 
@@ -252,11 +260,10 @@ after the ratio-4 compressed row count exceeds 512. The layer-level profile stil
 shows `compressor_indexer` around `0.151-0.152 ms/layer`, but for the current
 benchmark that should be read as compressor/update overhead, not top-k overhead.
 
-After the V100 register cap, 128-row MoE down, and one-token cuBLAS-A changes,
-the 15 tok/s priority
-order is:
+After the V100 register cap, 128-row MoE down, one-token cuBLAS-A, and
+512-thread gate/up changes, the next priority order is:
 
-1. fused MoE gate/up+midq work, plus any further down shape that beats rows128,
+1. further fused MoE gate/up+midq work, plus any down shape that beats rows128,
 2. attention-output B or full attention-output projection pipeline work,
 3. compressor/cache-update fusion as a secondary route,
 4. long-context indexer top-k work only if long-context decode becomes the main

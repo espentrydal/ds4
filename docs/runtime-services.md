@@ -53,6 +53,13 @@ A, a warm 200-token `ds4-server.service` request at 128K context logged
 `14.97 t/s` for the first 50-token chunk and `14.61 t/s` average over 200
 tokens. The direct 32K CLI benchmark measured about `14.83-14.88 t/s`.
 
+After the 512-thread MoE gate/up+midq default, the direct 32K CLI benchmark
+measured `15.09 t/s` on ai-smil1 and `15.02 t/s` on ai-smil2. A warm 128K
+`ds4-server.service` request on ai-smil2 logged `15.48 t/s` for the first
+50-token chunk and `15.00 t/s` average over 200 generated tokens. Cold service
+startup still includes model/cache loading and is not representative of warm
+decode speed.
+
 ### Qwen
 
 - Node: `ai-smil1`
