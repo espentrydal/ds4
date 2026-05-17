@@ -8100,6 +8100,13 @@ typedef struct {
     ds4_gpu_tensor *layer_heads[DS4_N_LAYER];
     ds4_gpu_tensor *layer_attn_low[DS4_N_LAYER];
     ds4_gpu_tensor *layer_attn_out[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_attn_cur[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_attn_norm[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_qr[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_qr_norm[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_q[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_kv_raw[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_kv[DS4_N_LAYER];
 
     /* Speculative decoding scratch.  MTP is allowed to mutate graph state only
      * if the target verifier can either commit it or restore the saved
@@ -8352,6 +8359,15 @@ static void metal_graph_free(ds4_gpu_graph *g) {
         ds4_gpu_tensor_free(g->layer_attn_out[il]);
         ds4_gpu_tensor_free(g->layer_attn_low[il]);
         ds4_gpu_tensor_free(g->layer_heads[il]);
+    }
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        ds4_gpu_tensor_free(g->layer_kv[il]);
+        ds4_gpu_tensor_free(g->layer_kv_raw[il]);
+        ds4_gpu_tensor_free(g->layer_q[il]);
+        ds4_gpu_tensor_free(g->layer_qr_norm[il]);
+        ds4_gpu_tensor_free(g->layer_qr[il]);
+        ds4_gpu_tensor_free(g->layer_attn_norm[il]);
+        ds4_gpu_tensor_free(g->layer_attn_cur[il]);
     }
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
         ds4_gpu_tensor_free(g->spec_attn_state_kv[il]);
@@ -8725,6 +8741,7 @@ static bool metal_graph_alloc_raw_cap(
     bool state_init_ok = true;
     const bool local_routed_scratch = getenv("DS4_CUDA_LOCAL_ROUTED_SCRATCH") != NULL;
     const bool local_attn_scratch = getenv("DS4_CUDA_LOCAL_ATTN_SCRATCH") != NULL;
+    const bool local_qkv_scratch = getenv("DS4_CUDA_LOCAL_QKV_SCRATCH") != NULL;
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
         if (ds4_gpu_use_layer_device(il, DS4_N_LAYER) == 0) {
             state_init_ok = false;
@@ -8751,6 +8768,23 @@ static bool metal_graph_alloc_raw_cap(
                             g->layer_heads[il] &&
                             g->layer_attn_low[il] &&
                             g->layer_attn_out[il];
+        }
+        if (local_qkv_scratch) {
+            g->layer_attn_cur[il] = ds4_gpu_tensor_alloc((uint64_t)DS4_N_EMBD * sizeof(float));
+            g->layer_attn_norm[il] = ds4_gpu_tensor_alloc((uint64_t)DS4_N_EMBD * sizeof(float));
+            g->layer_qr[il] = ds4_gpu_tensor_alloc(q_rank * sizeof(float));
+            g->layer_qr_norm[il] = ds4_gpu_tensor_alloc(q_rank * sizeof(float));
+            g->layer_q[il] = ds4_gpu_tensor_alloc(q_dim * sizeof(float));
+            g->layer_kv_raw[il] = ds4_gpu_tensor_alloc((uint64_t)DS4_N_HEAD_DIM * sizeof(float));
+            g->layer_kv[il] = ds4_gpu_tensor_alloc((uint64_t)DS4_N_HEAD_DIM * sizeof(float));
+            state_init_ok = state_init_ok &&
+                            g->layer_attn_cur[il] &&
+                            g->layer_attn_norm[il] &&
+                            g->layer_qr[il] &&
+                            g->layer_qr_norm[il] &&
+                            g->layer_q[il] &&
+                            g->layer_kv_raw[il] &&
+                            g->layer_kv[il];
         }
         g->layer_raw_cache[il] = metal_graph_alloc_kv_cache_tensor(
                 managed_kv_cache,
@@ -8916,6 +8950,15 @@ static bool metal_graph_alloc_raw_cap(
             layer_cache_ok = g->layer_heads[il] != NULL &&
                              g->layer_attn_low[il] != NULL &&
                              g->layer_attn_out[il] != NULL;
+        }
+        if (layer_cache_ok && local_qkv_scratch) {
+            layer_cache_ok = g->layer_attn_cur[il] != NULL &&
+                             g->layer_attn_norm[il] != NULL &&
+                             g->layer_qr[il] != NULL &&
+                             g->layer_qr_norm[il] != NULL &&
+                             g->layer_q[il] != NULL &&
+                             g->layer_kv_raw[il] != NULL &&
+                             g->layer_kv[il] != NULL;
         }
         if (layer_cache_ok && ratio != 0) {
             layer_cache_ok = g->layer_attn_comp_cache[il] != NULL &&
@@ -9232,6 +9275,23 @@ static bool metal_graph_encode_decode_layer(
     const bool qkv_rms_fused = !metal_graph_use_reference_qkv_norm();
     const bool qkv_pair_proj =
         qkv_rms_fused && getenv("DS4_CUDA_DISABLE_QKV_PAIR_PROJ") == NULL;
+
+    ds4_gpu_tensor *saved_attn_cur = g->attn_cur;
+    ds4_gpu_tensor *saved_attn_norm = g->attn_norm;
+    ds4_gpu_tensor *saved_qr = g->qr;
+    ds4_gpu_tensor *saved_qr_norm = g->qr_norm;
+    ds4_gpu_tensor *saved_q = g->q;
+    ds4_gpu_tensor *saved_kv_raw = g->kv_raw;
+    ds4_gpu_tensor *saved_kv = g->kv;
+    if (g->layer_attn_cur[il]) {
+        g->attn_cur = g->layer_attn_cur[il];
+        g->attn_norm = g->layer_attn_norm[il];
+        g->qr = g->layer_qr[il];
+        g->qr_norm = g->layer_qr_norm[il];
+        g->q = g->layer_q[il];
+        g->kv_raw = g->layer_kv_raw[il];
+        g->kv = g->layer_kv[il];
+    }
 
     bool ok = true;
     const bool decode_stage_profile = getenv("DS4_METAL_DECODE_STAGE_PROFILE") != NULL;
@@ -9968,6 +10028,15 @@ static bool metal_graph_encode_decode_layer(
 #undef DS4_METAL_PROFILE_DECODE_STAGE
     if (ok) {
         metal_graph_debug_dump_tensor("hc_ffn_post", g->after_ffn_hc, hc_dim, il, pos);
+    }
+    if (g->layer_attn_cur[il]) {
+        g->attn_cur = saved_attn_cur;
+        g->attn_norm = saved_attn_norm;
+        g->qr = saved_qr;
+        g->qr_norm = saved_qr_norm;
+        g->q = saved_q;
+        g->kv_raw = saved_kv_raw;
+        g->kv = saved_kv;
     }
     return ok;
 }
