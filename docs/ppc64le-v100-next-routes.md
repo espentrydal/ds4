@@ -374,6 +374,14 @@ Additional topology and projection checks also did not produce a route:
   measured `14.48 t/s`, and `DS4_CUDA_DEVICE=2` measured `14.36 t/s`.
   A real per-device scratch-buffer design is still a possible larger route, but
   simply changing the primary device is not.
+- A per-layer profile showed that layers 22-42 are much heavier than layers
+  0-21, especially in routed MoE and compressor/indexer work. A cost-balanced
+  contiguous split would be roughly 15/11/8/9 layers instead of the default
+  11/11/10/11, but current tensor-split tuning is limited by VRAM/cache
+  pressure. `DS4_CUDA_TENSOR_SPLIT=15,11,8,9` fell to `7.23 t/s`,
+  `12,12,9,10` fell to `13.60 t/s`, and `12,11,10,10` fell to `13.34 t/s`;
+  all changed the deterministic 64-token output hash because cache coverage
+  changed. Keep the default `8.2,8.2,8.2,8.2` split.
 
 ## 2026-05-16 Luce Megakernel Takeaways
 
