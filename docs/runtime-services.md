@@ -16,6 +16,7 @@ development, one-off overrides, and customized launches.
 - KV disk budget: `16384 MiB`
 - GPU split: `DS4_CUDA_TENSOR_SPLIT=8.2,8.2,8.2,8.2`
 - Routed MoE scratch: `DS4_CUDA_LOCAL_ROUTED_SCRATCH=1`
+- Attention-output scratch: `DS4_CUDA_LOCAL_ATTN_SCRATCH=1`
 - Decode-speed override: `DS4_METAL_DISABLE_SHARED_DOWN_HC_FUSION=1`
 
 The DS4 context default is intentionally 128K. DS4 decode speed is sensitive to
@@ -44,11 +45,11 @@ environment confirmed the override and a warm 200-token request at 128K context
 logged `13.28 t/s` for the first 50-token chunk and `12.99 t/s` average over
 200 tokens. The direct 32K CLI benchmark remains faster at about `13.20 t/s`.
 
-On 2026-05-17, `DS4_CUDA_LOCAL_ROUTED_SCRATCH=1` became the script default.
-Direct 32K validation preserved deterministic output hashes and measured
-`16.47 t/s` on ai-smil1 for a 200-token run and `16.48 t/s` on ai-smil2 for a
-64-token run. Systemd uses the same script, so the service inherits this setting
-on restart.
+On 2026-05-17, `DS4_CUDA_LOCAL_ROUTED_SCRATCH=1` and
+`DS4_CUDA_LOCAL_ATTN_SCRATCH=1` became script defaults. Direct 32K validation
+preserved deterministic output hashes and measured `16.54 t/s` on ai-smil1 for
+a 200-token run and `16.68 t/s` on ai-smil2 for a 64-token run. Systemd uses
+the same script, so the service inherits these settings on restart.
 
 Later on 2026-05-16, after the 64-row MoE decode down kernel became the default,
 a warm 200-token `ds4-server.service` request at 128K context logged
