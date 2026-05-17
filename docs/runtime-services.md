@@ -19,6 +19,7 @@ development, one-off overrides, and customized launches.
 - Attention-output scratch: `DS4_CUDA_LOCAL_ATTN_SCRATCH=1`
 - Q/KV scratch: `DS4_CUDA_LOCAL_QKV_SCRATCH=1`
 - Compressor/indexer scratch: `DS4_CUDA_LOCAL_COMPRESSOR_SCRATCH=1`
+- HC/FFN/shared scratch: `DS4_CUDA_LOCAL_HC_FFN_SCRATCH=1`
 - Decode-speed override: `DS4_METAL_DISABLE_SHARED_DOWN_HC_FUSION=1`
 
 The DS4 context default is intentionally 128K. DS4 decode speed is sensitive to
@@ -65,12 +66,13 @@ startup still includes model/cache loading and is not representative of warm
 decode speed.
 
 On 2026-05-17, `DS4_CUDA_LOCAL_ROUTED_SCRATCH=1`,
-`DS4_CUDA_LOCAL_ATTN_SCRATCH=1`, `DS4_CUDA_LOCAL_QKV_SCRATCH=1`, and
-`DS4_CUDA_LOCAL_COMPRESSOR_SCRATCH=1` became script defaults. Direct 32K
-validation preserved deterministic output hashes and measured `17.83 t/s` on
-ai-smil1 for a 200-token run, `17.84 t/s` on ai-smil2 for a 64-token run, and
-`17.76 t/s` on ai-smil2 for a 200-token run. Systemd uses the same script, so
-the service inherits these settings on restart.
+`DS4_CUDA_LOCAL_ATTN_SCRATCH=1`, `DS4_CUDA_LOCAL_QKV_SCRATCH=1`,
+`DS4_CUDA_LOCAL_COMPRESSOR_SCRATCH=1`, and
+`DS4_CUDA_LOCAL_HC_FFN_SCRATCH=1` became script defaults. Direct 32K validation
+preserved deterministic output hashes and measured `21.48 t/s` on ai-smil1 for
+a 200-token run, `21.66 t/s` on ai-smil2 for a 64-token run, and `21.47 t/s`
+on ai-smil2 for a 200-token run. Systemd uses the same script, so the service
+inherits these settings on restart.
 
 ### Qwen
 
