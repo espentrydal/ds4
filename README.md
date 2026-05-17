@@ -799,3 +799,6 @@ first answer:
   logit/model issues.
 - `ds4-server --trace` writes the rendered prompts, cache decisions, generated
   text, and tool-parser events for a whole agent session.
+
+Use `--chdir /path/to/ds4` when launching `ds4-server` from another directory,
+so relative runtime files such as `metal/*.metal` resolve from the project tree.
