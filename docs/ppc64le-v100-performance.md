@@ -12,6 +12,7 @@ DS4_CUDA_LOCAL_ROUTED_SCRATCH=1
 DS4_CUDA_LOCAL_ATTN_SCRATCH=1
 DS4_CUDA_LOCAL_QKV_SCRATCH=1
 DS4_CUDA_LOCAL_COMPRESSOR_SCRATCH=1
+DS4_CUDA_LOCAL_HC_FFN_SCRATCH=1
 DS4_METAL_DISABLE_SHARED_DOWN_HC_FUSION=1
 make cuda-v100  # includes -Xptxas=-maxrregcount=64
 ```
@@ -21,21 +22,25 @@ serving, or `scripts/profile-ds4-flash-v100-1node.sh` for a reproducible decode
 profile run.
 
 The latest 2026-05-17 scratch locality changes keep per-layer routed MoE,
-attention-output, Q/KV, and compressor/indexer scratch tensors on each layer's
-assigned GPU. With `DS4_CUDA_LOCAL_ROUTED_SCRATCH=1`,
-`DS4_CUDA_LOCAL_ATTN_SCRATCH=1`, `DS4_CUDA_LOCAL_QKV_SCRATCH=1`, and
-`DS4_CUDA_LOCAL_COMPRESSOR_SCRATCH=1`, deterministic checks preserved the
-existing 64-token and 200-token output hashes while raising direct 32K decode
-to `17.83 t/s` for 64 and 200 tokens on ai-smil1. ai-smil2 matched the
-64-token output hash at `17.84 t/s` and the 200-token output hash at
-`17.76 t/s`.
+attention-output, Q/KV, compressor/indexer, and HC/FFN/shared scratch tensors
+on each layer's assigned GPU. With `DS4_CUDA_LOCAL_ROUTED_SCRATCH=1`,
+`DS4_CUDA_LOCAL_ATTN_SCRATCH=1`, `DS4_CUDA_LOCAL_QKV_SCRATCH=1`,
+`DS4_CUDA_LOCAL_COMPRESSOR_SCRATCH=1`, and
+`DS4_CUDA_LOCAL_HC_FFN_SCRATCH=1`, deterministic checks preserved the existing
+64-token and 200-token output hashes while raising direct 32K decode to
+`21.58 t/s` for 64 tokens and `21.48 t/s` for 200 tokens on ai-smil1. ai-smil2
+matched the 64-token output hash at `21.66 t/s` and the 200-token output hash
+at `21.47 t/s`.
 
 A synchronized ai-smil1 profile after all locality defaults showed the
-remaining largest decode buckets as `routed_moe=0.298 ms/layer`,
-`attn_output=0.239 ms/layer`, `q_path=0.164 ms/layer`,
-`ffn_hc_pre=0.124 ms/layer`, `attn_hc_pre=0.119 ms/layer`, and
-`compressor_indexer=0.097 ms/layer`. The compressor/indexer locality change
-reduced that bucket from the previous `0.141 ms/layer` profile.
+remaining largest decode buckets as `routed_moe=0.282 ms/layer`,
+`attn_output=0.238 ms/layer`, `q_path=0.164 ms/layer`,
+`attn_hc_pre=0.102 ms/layer`, `compressor_indexer=0.096 ms/layer`,
+`shared_gate_up=0.080 ms/layer`, and `ffn_hc_pre=0.069 ms/layer`. The
+HC/FFN/shared locality change cut the largest host-device scratch effects:
+`ffn_hc_pre` fell from `0.124` to `0.069 ms/layer`, `shared_gate_up` from
+`0.103` to `0.080 ms/layer`, `shared_down` from `0.069` to `0.055 ms/layer`,
+and the HC post stages from about `0.064` to `0.021-0.025 ms/layer`.
 
 The four-GPU split is topology-aware through device ordering. Both nodes have
 NVLink pairs GPU0-GPU1 and GPU2-GPU3, while cross-pair GPU traffic is `SYS`.

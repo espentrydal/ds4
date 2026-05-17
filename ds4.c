@@ -8113,6 +8113,23 @@ typedef struct {
     ds4_gpu_tensor *layer_indexer_weights[DS4_N_LAYER];
     ds4_gpu_tensor *layer_indexer_scores[DS4_N_LAYER];
     ds4_gpu_tensor *layer_comp_selected[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_flat_hc[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_hc_mix[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_hc_split[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_hc_pre[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_hc_post[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_hc_comb[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_after_attn_hc[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_ffn_cur[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_ffn_norm[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_shared_gate[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_shared_up[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_shared_mid[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_shared_out[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_router_logits[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_router_probs[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_router_selected[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_router_weights[DS4_N_LAYER];
 
     /* Speculative decoding scratch.  MTP is allowed to mutate graph state only
      * if the target verifier can either commit it or restore the saved
@@ -8382,6 +8399,25 @@ static void metal_graph_free(ds4_gpu_graph *g) {
         ds4_gpu_tensor_free(g->layer_indexer_q[il]);
         ds4_gpu_tensor_free(g->layer_comp_sc_cur[il]);
         ds4_gpu_tensor_free(g->layer_comp_kv_cur[il]);
+    }
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        ds4_gpu_tensor_free(g->layer_router_weights[il]);
+        ds4_gpu_tensor_free(g->layer_router_selected[il]);
+        ds4_gpu_tensor_free(g->layer_router_probs[il]);
+        ds4_gpu_tensor_free(g->layer_router_logits[il]);
+        ds4_gpu_tensor_free(g->layer_shared_out[il]);
+        ds4_gpu_tensor_free(g->layer_shared_mid[il]);
+        ds4_gpu_tensor_free(g->layer_shared_up[il]);
+        ds4_gpu_tensor_free(g->layer_shared_gate[il]);
+        ds4_gpu_tensor_free(g->layer_ffn_norm[il]);
+        ds4_gpu_tensor_free(g->layer_ffn_cur[il]);
+        ds4_gpu_tensor_free(g->layer_after_attn_hc[il]);
+        ds4_gpu_tensor_free(g->layer_hc_comb[il]);
+        ds4_gpu_tensor_free(g->layer_hc_post[il]);
+        ds4_gpu_tensor_free(g->layer_hc_pre[il]);
+        ds4_gpu_tensor_free(g->layer_hc_split[il]);
+        ds4_gpu_tensor_free(g->layer_hc_mix[il]);
+        ds4_gpu_tensor_free(g->layer_flat_hc[il]);
     }
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
         ds4_gpu_tensor_free(g->spec_attn_state_kv[il]);
@@ -8757,6 +8793,7 @@ static bool metal_graph_alloc_raw_cap(
     const bool local_attn_scratch = getenv("DS4_CUDA_LOCAL_ATTN_SCRATCH") != NULL;
     const bool local_qkv_scratch = getenv("DS4_CUDA_LOCAL_QKV_SCRATCH") != NULL;
     const bool local_compressor_scratch = getenv("DS4_CUDA_LOCAL_COMPRESSOR_SCRATCH") != NULL;
+    const bool local_hc_ffn_scratch = getenv("DS4_CUDA_LOCAL_HC_FFN_SCRATCH") != NULL;
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
         if (ds4_gpu_use_layer_device(il, DS4_N_LAYER) == 0) {
             state_init_ok = false;
@@ -8816,6 +8853,51 @@ static bool metal_graph_alloc_raw_cap(
                             g->layer_indexer_weights[il] &&
                             g->layer_indexer_scores[il] &&
                             g->layer_comp_selected[il];
+        }
+        if (local_hc_ffn_scratch) {
+            g->layer_flat_hc[il] = ds4_gpu_tensor_alloc(hc_dim * sizeof(float));
+            g->layer_hc_mix[il] = ds4_gpu_tensor_alloc(mix_hc * sizeof(float));
+            g->layer_hc_split[il] = ds4_gpu_tensor_alloc(mix_hc * sizeof(float));
+            if (g->layer_hc_split[il]) {
+                g->layer_hc_pre[il] = ds4_gpu_tensor_view(g->layer_hc_split[il],
+                                                          0,
+                                                          (uint64_t)DS4_N_HC * sizeof(float));
+                g->layer_hc_post[il] = ds4_gpu_tensor_view(g->layer_hc_split[il],
+                                                           (uint64_t)DS4_N_HC * sizeof(float),
+                                                           (uint64_t)DS4_N_HC * sizeof(float));
+                g->layer_hc_comb[il] = ds4_gpu_tensor_view(g->layer_hc_split[il],
+                                                           2ull * DS4_N_HC * sizeof(float),
+                                                           (uint64_t)DS4_N_HC * DS4_N_HC * sizeof(float));
+            }
+            g->layer_after_attn_hc[il] = ds4_gpu_tensor_alloc(hc_dim * sizeof(float));
+            g->layer_ffn_cur[il] = ds4_gpu_tensor_alloc((uint64_t)DS4_N_EMBD * sizeof(float));
+            g->layer_ffn_norm[il] = ds4_gpu_tensor_alloc((uint64_t)DS4_N_EMBD * sizeof(float));
+            g->layer_shared_gate[il] = ds4_gpu_tensor_alloc(shared_dim * sizeof(float));
+            g->layer_shared_up[il] = ds4_gpu_tensor_alloc(shared_dim * sizeof(float));
+            g->layer_shared_mid[il] = ds4_gpu_tensor_alloc(shared_dim * sizeof(float));
+            g->layer_shared_out[il] = ds4_gpu_tensor_alloc((uint64_t)DS4_N_EMBD * sizeof(float));
+            g->layer_router_logits[il] = ds4_gpu_tensor_alloc(DS4_N_EXPERT * sizeof(float));
+            g->layer_router_probs[il] = ds4_gpu_tensor_alloc(DS4_N_EXPERT * sizeof(float));
+            g->layer_router_selected[il] = ds4_gpu_tensor_alloc(DS4_N_EXPERT_USED * sizeof(int));
+            g->layer_router_weights[il] = ds4_gpu_tensor_alloc(DS4_N_EXPERT_USED * sizeof(float));
+            state_init_ok = state_init_ok &&
+                            g->layer_flat_hc[il] &&
+                            g->layer_hc_mix[il] &&
+                            g->layer_hc_split[il] &&
+                            g->layer_hc_pre[il] &&
+                            g->layer_hc_post[il] &&
+                            g->layer_hc_comb[il] &&
+                            g->layer_after_attn_hc[il] &&
+                            g->layer_ffn_cur[il] &&
+                            g->layer_ffn_norm[il] &&
+                            g->layer_shared_gate[il] &&
+                            g->layer_shared_up[il] &&
+                            g->layer_shared_mid[il] &&
+                            g->layer_shared_out[il] &&
+                            g->layer_router_logits[il] &&
+                            g->layer_router_probs[il] &&
+                            g->layer_router_selected[il] &&
+                            g->layer_router_weights[il];
         }
         g->layer_raw_cache[il] = metal_graph_alloc_kv_cache_tensor(
                 managed_kv_cache,
@@ -9320,6 +9402,23 @@ static bool metal_graph_encode_decode_layer(
     ds4_gpu_tensor *saved_indexer_weights = g->indexer_weights;
     ds4_gpu_tensor *saved_indexer_scores = g->indexer_scores;
     ds4_gpu_tensor *saved_comp_selected = g->comp_selected;
+    ds4_gpu_tensor *saved_flat_hc = g->flat_hc;
+    ds4_gpu_tensor *saved_hc_mix = g->hc_mix;
+    ds4_gpu_tensor *saved_hc_split = g->hc_split;
+    ds4_gpu_tensor *saved_hc_pre = g->hc_pre;
+    ds4_gpu_tensor *saved_hc_post = g->hc_post;
+    ds4_gpu_tensor *saved_hc_comb = g->hc_comb;
+    ds4_gpu_tensor *saved_after_attn_hc = g->after_attn_hc;
+    ds4_gpu_tensor *saved_ffn_cur = g->ffn_cur;
+    ds4_gpu_tensor *saved_ffn_norm = g->ffn_norm;
+    ds4_gpu_tensor *saved_shared_gate = g->shared_gate;
+    ds4_gpu_tensor *saved_shared_up = g->shared_up;
+    ds4_gpu_tensor *saved_shared_mid = g->shared_mid;
+    ds4_gpu_tensor *saved_shared_out = g->shared_out;
+    ds4_gpu_tensor *saved_router_logits = g->router_logits;
+    ds4_gpu_tensor *saved_router_probs = g->router_probs;
+    ds4_gpu_tensor *saved_router_selected = g->router_selected;
+    ds4_gpu_tensor *saved_router_weights = g->router_weights;
     if (g->layer_attn_cur[il]) {
         g->attn_cur = g->layer_attn_cur[il];
         g->attn_norm = g->layer_attn_norm[il];
@@ -9336,6 +9435,25 @@ static bool metal_graph_encode_decode_layer(
         g->indexer_weights = g->layer_indexer_weights[il];
         g->indexer_scores = g->layer_indexer_scores[il];
         g->comp_selected = g->layer_comp_selected[il];
+    }
+    if (g->layer_flat_hc[il]) {
+        g->flat_hc = g->layer_flat_hc[il];
+        g->hc_mix = g->layer_hc_mix[il];
+        g->hc_split = g->layer_hc_split[il];
+        g->hc_pre = g->layer_hc_pre[il];
+        g->hc_post = g->layer_hc_post[il];
+        g->hc_comb = g->layer_hc_comb[il];
+        g->after_attn_hc = g->layer_after_attn_hc[il];
+        g->ffn_cur = g->layer_ffn_cur[il];
+        g->ffn_norm = g->layer_ffn_norm[il];
+        g->shared_gate = g->layer_shared_gate[il];
+        g->shared_up = g->layer_shared_up[il];
+        g->shared_mid = g->layer_shared_mid[il];
+        g->shared_out = g->layer_shared_out[il];
+        g->router_logits = g->layer_router_logits[il];
+        g->router_probs = g->layer_router_probs[il];
+        g->router_selected = g->layer_router_selected[il];
+        g->router_weights = g->layer_router_weights[il];
     }
 
     bool ok = true;
@@ -10090,6 +10208,25 @@ static bool metal_graph_encode_decode_layer(
         g->indexer_weights = saved_indexer_weights;
         g->indexer_scores = saved_indexer_scores;
         g->comp_selected = saved_comp_selected;
+    }
+    if (g->layer_flat_hc[il]) {
+        g->flat_hc = saved_flat_hc;
+        g->hc_mix = saved_hc_mix;
+        g->hc_split = saved_hc_split;
+        g->hc_pre = saved_hc_pre;
+        g->hc_post = saved_hc_post;
+        g->hc_comb = saved_hc_comb;
+        g->after_attn_hc = saved_after_attn_hc;
+        g->ffn_cur = saved_ffn_cur;
+        g->ffn_norm = saved_ffn_norm;
+        g->shared_gate = saved_shared_gate;
+        g->shared_up = saved_shared_up;
+        g->shared_mid = saved_shared_mid;
+        g->shared_out = saved_shared_out;
+        g->router_logits = saved_router_logits;
+        g->router_probs = saved_router_probs;
+        g->router_selected = saved_router_selected;
+        g->router_weights = saved_router_weights;
     }
     return ok;
 }

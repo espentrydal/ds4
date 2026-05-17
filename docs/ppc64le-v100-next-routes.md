@@ -3,18 +3,20 @@
 Current best verified default one-node decode result:
 
 ```text
-ai-smil1: ds4: prefill: 0.13 t/s, generation: 17.83 t/s
-ai-smil2: ds4: prefill: 0.13 t/s, generation: 17.84 t/s (64 tokens)
-ai-smil2: ds4: prefill: 0.13 t/s, generation: 17.76 t/s (200 tokens)
+ai-smil1: ds4: prefill: 0.13 t/s, generation: 21.58 t/s (64 tokens)
+ai-smil1: ds4: prefill: 0.13 t/s, generation: 21.48 t/s (200 tokens)
+ai-smil2: ds4: prefill: 0.13 t/s, generation: 21.66 t/s (64 tokens)
+ai-smil2: ds4: prefill: 0.13 t/s, generation: 21.47 t/s (200 tokens)
 ```
 
-The 17 tok/s direct target is reached by keeping routed-MoE, attention-output,
-Q/KV, and compressor/indexer scratch tensors local to each layer's assigned GPU
-with
+The 18 tok/s direct target is exceeded by keeping routed-MoE, attention-output,
+Q/KV, compressor/indexer, and HC/FFN/shared scratch tensors local to each
+layer's assigned GPU with
 `DS4_CUDA_LOCAL_ROUTED_SCRATCH=1`, `DS4_CUDA_LOCAL_ATTN_SCRATCH=1`, and
 `DS4_CUDA_LOCAL_QKV_SCRATCH=1`, plus
-`DS4_CUDA_LOCAL_COMPRESSOR_SCRATCH=1`. The 512-thread fused MoE gate/up+midq
-decode kernel remains part of the fast path; the old 256-thread kernel remains
+`DS4_CUDA_LOCAL_COMPRESSOR_SCRATCH=1` and
+`DS4_CUDA_LOCAL_HC_FFN_SCRATCH=1`. The 512-thread fused MoE gate/up+midq decode
+kernel remains part of the fast path; the old 256-thread kernel remains
 available for comparison with
 `DS4_CUDA_MOE_GATEUP_THREADS256=1`.
 
@@ -24,14 +26,16 @@ route. The latest synchronized profile still has most remaining time inside the
 layer loop:
 
 ```text
-routed_moe          0.298 ms/layer
-attn_output         0.239 ms/layer
+routed_moe          0.282 ms/layer
+attn_output         0.238 ms/layer
 q_path              0.164 ms/layer
-ffn_hc_pre          0.124 ms/layer
-attn_hc_pre         0.119 ms/layer
-shared_gate_up      0.103 ms/layer
-compressor_indexer  0.097 ms/layer
-shared_down         0.069 ms/layer
+attn_hc_pre         0.102 ms/layer
+compressor_indexer  0.096 ms/layer
+shared_gate_up      0.080 ms/layer
+ffn_hc_pre          0.069 ms/layer
+attention           0.062 ms/layer
+shared_down         0.055 ms/layer
+router              0.052 ms/layer
 ```
 
 ## Most Realistic Routes
@@ -135,7 +139,16 @@ shared_down         0.069 ms/layer
    ai-smil2 matched the 64-token hash at `17.84 t/s` and the 200-token hash at
    `17.76 t/s`.
 
-3e. Keep the NVLink-pair-aware device order.
+3e. Keep HC/FFN/shared scratch local to layer devices.
+
+   `DS4_CUDA_LOCAL_HC_FFN_SCRATCH=1` keeps per-layer HC pre/post scratch,
+   after-attention HC, FFN input/norm, shared expert scratch, and router scratch
+   on the layer device. With the other locality defaults enabled, it preserved
+   deterministic output hashes and measured `21.58 t/s` for 64 tokens and
+   `21.48 t/s` for 200 tokens on ai-smil1. ai-smil2 matched the 64-token hash
+   at `21.66 t/s` and the 200-token hash at `21.47 t/s`.
+
+3f. Keep the NVLink-pair-aware device order.
 
    The runtime assigns contiguous layer ranges according to
    `DS4_CUDA_DEVICES` and `DS4_CUDA_TENSOR_SPLIT`; it does not dynamically
