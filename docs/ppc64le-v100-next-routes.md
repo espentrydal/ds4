@@ -3,14 +3,15 @@
 Current best verified default one-node decode result:
 
 ```text
-ai-smil1: ds4: prefill: 0.13 t/s, generation: 16.47 t/s
-ai-smil2: ds4: prefill: 0.13 t/s, generation: 16.48 t/s
+ai-smil1: ds4: prefill: 0.13 t/s, generation: 16.54 t/s
+ai-smil2: ds4: prefill: 0.13 t/s, generation: 16.68 t/s
 ```
 
-The 16 tok/s direct target is reached by keeping routed-MoE scratch/output
-tensors local to each layer's assigned GPU with `DS4_CUDA_LOCAL_ROUTED_SCRATCH=1`.
-The 512-thread fused MoE gate/up+midq decode kernel remains part of the fast
-path; the old 256-thread kernel remains available for comparison with
+The 16 tok/s direct target is reached by keeping routed-MoE and attention-output
+scratch tensors local to each layer's assigned GPU with
+`DS4_CUDA_LOCAL_ROUTED_SCRATCH=1` and `DS4_CUDA_LOCAL_ATTN_SCRATCH=1`. The
+512-thread fused MoE gate/up+midq decode kernel remains part of the fast path;
+the old 256-thread kernel remains available for comparison with
 `DS4_CUDA_MOE_GATEUP_THREADS256=1`.
 
 The best reserve-tuning one-off measured `14.91 t/s`, but follow-up lower
@@ -99,6 +100,14 @@ shared_down         0.068 ms/layer
    and raised direct 32K decode to `16.56 t/s` for 64 tokens and `16.47 t/s`
    for 200 tokens on ai-smil1. ai-smil2 matched the 64-token hash at
    `16.48 t/s`.
+
+3b. Keep attention-output scratch local to layer devices.
+
+   `DS4_CUDA_LOCAL_ATTN_SCRATCH=1` applies the same locality idea to attention
+   heads, low-rank attention-output scratch, and attention-output buffers. In
+   combination with local routed-MoE scratch, it preserved deterministic output
+   hashes and measured `16.64 t/s` for 64 tokens and `16.54 t/s` for 200 tokens
+   on ai-smil1. ai-smil2 matched the 64-token hash at `16.68 t/s`.
 
 4. Split-output cold-start instrumentation.
 

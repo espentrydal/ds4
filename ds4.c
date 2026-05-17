@@ -8097,6 +8097,9 @@ typedef struct {
     ds4_gpu_tensor *layer_routed_mid[DS4_N_LAYER];
     ds4_gpu_tensor *layer_routed_down[DS4_N_LAYER];
     ds4_gpu_tensor *layer_routed_out[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_heads[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_attn_low[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_attn_out[DS4_N_LAYER];
 
     /* Speculative decoding scratch.  MTP is allowed to mutate graph state only
      * if the target verifier can either commit it or restore the saved
@@ -8344,6 +8347,11 @@ static void metal_graph_free(ds4_gpu_graph *g) {
         ds4_gpu_tensor_free(g->layer_routed_mid[il]);
         ds4_gpu_tensor_free(g->layer_routed_up[il]);
         ds4_gpu_tensor_free(g->layer_routed_gate[il]);
+    }
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        ds4_gpu_tensor_free(g->layer_attn_out[il]);
+        ds4_gpu_tensor_free(g->layer_attn_low[il]);
+        ds4_gpu_tensor_free(g->layer_heads[il]);
     }
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
         ds4_gpu_tensor_free(g->spec_attn_state_kv[il]);
@@ -8716,6 +8724,7 @@ static bool metal_graph_alloc_raw_cap(
     g->kv = ds4_gpu_tensor_alloc((uint64_t)DS4_N_HEAD_DIM * sizeof(float));
     bool state_init_ok = true;
     const bool local_routed_scratch = getenv("DS4_CUDA_LOCAL_ROUTED_SCRATCH") != NULL;
+    const bool local_attn_scratch = getenv("DS4_CUDA_LOCAL_ATTN_SCRATCH") != NULL;
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
         if (ds4_gpu_use_layer_device(il, DS4_N_LAYER) == 0) {
             state_init_ok = false;
@@ -8733,6 +8742,15 @@ static bool metal_graph_alloc_raw_cap(
                             g->layer_routed_mid[il] &&
                             g->layer_routed_down[il] &&
                             g->layer_routed_out[il];
+        }
+        if (local_attn_scratch) {
+            g->layer_heads[il] = ds4_gpu_tensor_alloc(q_dim * sizeof(float));
+            g->layer_attn_low[il] = ds4_gpu_tensor_alloc(low_dim * sizeof(float));
+            g->layer_attn_out[il] = ds4_gpu_tensor_alloc((uint64_t)DS4_N_EMBD * sizeof(float));
+            state_init_ok = state_init_ok &&
+                            g->layer_heads[il] &&
+                            g->layer_attn_low[il] &&
+                            g->layer_attn_out[il];
         }
         g->layer_raw_cache[il] = metal_graph_alloc_kv_cache_tensor(
                 managed_kv_cache,
@@ -8893,6 +8911,11 @@ static bool metal_graph_alloc_raw_cap(
                              g->layer_routed_mid[il] != NULL &&
                              g->layer_routed_down[il] != NULL &&
                              g->layer_routed_out[il] != NULL;
+        }
+        if (layer_cache_ok && local_attn_scratch) {
+            layer_cache_ok = g->layer_heads[il] != NULL &&
+                             g->layer_attn_low[il] != NULL &&
+                             g->layer_attn_out[il] != NULL;
         }
         if (layer_cache_ok && ratio != 0) {
             layer_cache_ok = g->layer_attn_comp_cache[il] != NULL &&
@@ -9626,11 +9649,15 @@ static bool metal_graph_encode_decode_layer(
     }
     DS4_METAL_PROFILE_DECODE_STAGE("compressor_indexer");
 
+    ds4_gpu_tensor *heads = g->layer_heads[il] ? g->layer_heads[il] : g->heads;
+    ds4_gpu_tensor *attn_low = g->layer_attn_low[il] ? g->layer_attn_low[il] : g->attn_low;
+    ds4_gpu_tensor *attn_out = g->layer_attn_out[il] ? g->layer_attn_out[il] : g->attn_out;
+
     if (ok) {
         const uint32_t raw_start = metal_graph_raw_start_for_span(g, pos, n_raw);
         if (n_comp != 0 && comp_selected != NULL && n_selected != 0) {
             ok = ds4_gpu_attention_indexed_mixed_batch_heads_tensor(
-                    g->heads,
+                    heads,
                     model->map,
                     model->size,
                     layer->attn_sinks->abs_offset,
@@ -9658,7 +9685,7 @@ static bool metal_graph_encode_decode_layer(
                                                                 &decode_index_stage_t0);
             }
         } else {
-            ok = ds4_gpu_attention_decode_heads_tensor(g->heads,
+            ok = ds4_gpu_attention_decode_heads_tensor(heads,
                                                          model->map, model->size,
                                                          layer->attn_sinks->abs_offset,
                                                          g->q, raw_cache, n_raw,
@@ -9673,9 +9700,9 @@ static bool metal_graph_encode_decode_layer(
     }
     DS4_METAL_PROFILE_DECODE_STAGE("attention");
     if (ok) {
-        metal_graph_debug_dump_tensor("kqv_out", g->heads, q_dim, il, pos);
+        metal_graph_debug_dump_tensor("kqv_out", heads, q_dim, il, pos);
     }
-    if (ok) ok = ds4_gpu_rope_tail_tensor(g->heads,
+    if (ok) ok = ds4_gpu_rope_tail_tensor(heads,
                                             1, DS4_N_HEAD, DS4_N_HEAD_DIM,
                                             DS4_N_ROT, pos,
                                             compressed ? (uint32_t)DS4_ROPE_ORIG_CTX : 0,
@@ -9687,37 +9714,37 @@ static bool metal_graph_encode_decode_layer(
                                             DS4_ROPE_YARN_BETA_FAST,
                                             DS4_ROPE_YARN_BETA_SLOW) != 0;
     if (ok) {
-        metal_graph_debug_dump_tensor("kqv_back", g->heads, q_dim, il, pos);
+        metal_graph_debug_dump_tensor("kqv_back", heads, q_dim, il, pos);
     }
     const bool fuse_attn_out_hc =
         !metal_graph_directional_steering_attn_enabled(g) &&
         !metal_graph_use_reference_attn_out_hc();
     if (ok && fuse_attn_out_hc) {
-        ok = ds4_gpu_attention_output_low_q8_tensor(g->attn_low,
+        ok = ds4_gpu_attention_output_low_q8_tensor(attn_low,
                                                       model->map,
                                                       model->size,
                                                       layer->attn_output_a->abs_offset,
                                                       group_dim,
                                                       rank,
                                                       n_groups,
-                                                      g->heads) != 0;
+                                                      heads) != 0;
         if (ok) {
             ok = ds4_gpu_matmul_q8_0_hc_expand_tensor(g->after_attn_hc,
-                                                        g->attn_out,
+                                                        attn_out,
                                                         model->map,
                                                         model->size,
                                                         layer->attn_output_b->abs_offset,
                                                         (uint64_t)n_groups * rank,
                                                         DS4_N_EMBD,
-                                                        g->attn_low,
+                                                        attn_low,
                                                         g->cur_hc,
                                                         g->hc_split,
                                                         DS4_N_EMBD,
                                                         DS4_N_HC) != 0;
         }
     } else if (ok) {
-        ok = ds4_gpu_attention_output_q8_batch_tensor(g->attn_out,
-                                                        g->attn_low,
+        ok = ds4_gpu_attention_output_q8_batch_tensor(attn_out,
+                                                        attn_low,
                                                         g->batch_group_tmp,
                                                         g->batch_low_tmp,
                                                         model->map,
@@ -9726,20 +9753,20 @@ static bool metal_graph_encode_decode_layer(
                                                         layer->attn_output_b->abs_offset,
                                                         group_dim, rank,
                                                         n_groups, DS4_N_EMBD,
-                                                        g->heads, 1) != 0;
+                                                        heads, 1) != 0;
     }
     DS4_METAL_PROFILE_DECODE_STAGE("attn_output");
     if (ok) {
-        metal_graph_debug_dump_tensor("attn_low", g->attn_low, (uint64_t)n_groups * rank, il, pos);
+        metal_graph_debug_dump_tensor("attn_low", attn_low, (uint64_t)n_groups * rank, il, pos);
     }
     if (ok) {
-        metal_graph_debug_dump_tensor("attn_out", g->attn_out, DS4_N_EMBD, il, pos);
+        metal_graph_debug_dump_tensor("attn_out", attn_out, DS4_N_EMBD, il, pos);
     }
     if (ok && metal_graph_directional_steering_attn_enabled(g)) {
-        ok = metal_graph_apply_directional_steering_attn(g, g->attn_out, il, 1);
+        ok = metal_graph_apply_directional_steering_attn(g, attn_out, il, 1);
     }
     if (ok && !fuse_attn_out_hc) {
-        ok = ds4_gpu_hc_expand_tensor(g->after_attn_hc, g->attn_out, g->cur_hc,
+        ok = ds4_gpu_hc_expand_tensor(g->after_attn_hc, attn_out, g->cur_hc,
                                         g->hc_post, g->hc_comb, DS4_N_EMBD, DS4_N_HC) != 0;
     }
     DS4_METAL_PROFILE_DECODE_STAGE("attn_hc_post");

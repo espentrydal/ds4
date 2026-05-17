@@ -9,6 +9,7 @@ DS4_CUDA_DEVICES=0,1,2,3
 DS4_CUDA_TENSOR_SPLIT=8.2,8.2,8.2,8.2
 DS4_CUDA_WEIGHT_ARENA_CHUNK_MB=512
 DS4_CUDA_LOCAL_ROUTED_SCRATCH=1
+DS4_CUDA_LOCAL_ATTN_SCRATCH=1
 DS4_METAL_DISABLE_SHARED_DOWN_HC_FUSION=1
 make cuda-v100  # includes -Xptxas=-maxrregcount=64
 ```
@@ -17,12 +18,13 @@ Use `scripts/server-ds4-flash-v100-1node.sh` for OpenAI/Anthropic-compatible
 serving, or `scripts/profile-ds4-flash-v100-1node.sh` for a reproducible decode
 profile run.
 
-The latest 2026-05-17 routed-MoE scratch locality change keeps per-layer routed
-MoE scratch/output tensors on each layer's assigned GPU. With
-`DS4_CUDA_LOCAL_ROUTED_SCRATCH=1`, deterministic checks preserved the existing
-64-token and 200-token output hashes while raising direct 32K decode to
-`16.56 t/s` for 64 tokens and `16.47 t/s` for 200 tokens on ai-smil1. ai-smil2
-matched the 64-token output hash and measured `16.48 t/s`.
+The latest 2026-05-17 scratch locality changes keep per-layer routed MoE and
+attention-output scratch tensors on each layer's assigned GPU. With
+`DS4_CUDA_LOCAL_ROUTED_SCRATCH=1` and `DS4_CUDA_LOCAL_ATTN_SCRATCH=1`,
+deterministic checks preserved the existing 64-token and 200-token output
+hashes while raising direct 32K decode to `16.64 t/s` for 64 tokens and
+`16.54 t/s` for 200 tokens on ai-smil1. ai-smil2 matched the 64-token output
+hash and measured `16.68 t/s`.
 
 Production serving now defaults to `DS4_CTX=131072` to reduce VRAM pressure and
 protect decode speed. The historical measurements below were mostly taken at
