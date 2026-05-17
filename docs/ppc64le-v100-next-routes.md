@@ -3,13 +3,14 @@
 Current best verified default one-node decode result:
 
 ```text
-ai-smil1: ds4: prefill: 0.15 t/s, generation: 15.09 t/s
-ai-smil2: ds4: prefill: 0.15 t/s, generation: 15.02 t/s
+ai-smil1: ds4: prefill: 0.13 t/s, generation: 16.47 t/s
+ai-smil2: ds4: prefill: 0.13 t/s, generation: 16.48 t/s
 ```
 
-The 15 tok/s direct 200-token target is reached by making the fused MoE
-gate/up+midq decode kernel use 512 threads per 256-row Q8_K block. The old
-256-thread kernel remains available for comparison with
+The 16 tok/s direct target is reached by keeping routed-MoE scratch/output
+tensors local to each layer's assigned GPU with `DS4_CUDA_LOCAL_ROUTED_SCRATCH=1`.
+The 512-thread fused MoE gate/up+midq decode kernel remains part of the fast
+path; the old 256-thread kernel remains available for comparison with
 `DS4_CUDA_MOE_GATEUP_THREADS256=1`.
 
 The best reserve-tuning one-off measured `14.91 t/s`, but follow-up lower
@@ -88,6 +89,16 @@ shared_down         0.068 ms/layer
    gate/up, constant-memory LUT lookup, half/full-warp down kernels, and a
    5-row x 6-slot direct-sum down kernel. Further gains probably need another
    fused gate/up+midq shape or a down shape that beats rows128.
+
+3a. Keep routed-MoE scratch local to layer devices.
+
+   `DS4_CUDA_LOCAL_ROUTED_SCRATCH=1` allocates routed-MoE scratch/output tensors
+   per layer on the layer's assigned CUDA device. This avoids running the
+   largest decode bucket through scratch buffers owned by the primary GPU. It
+   preserved the existing deterministic 64-token and 200-token output hashes,
+   and raised direct 32K decode to `16.56 t/s` for 64 tokens and `16.47 t/s`
+   for 200 tokens on ai-smil1. ai-smil2 matched the 64-token hash at
+   `16.48 t/s`.
 
 4. Split-output cold-start instrumentation.
 
