@@ -3,15 +3,18 @@
 Current best verified default one-node decode result:
 
 ```text
-ai-smil1: ds4: prefill: 0.13 t/s, generation: 17.26 t/s
-ai-smil2: ds4: prefill: 0.13 t/s, generation: 17.26 t/s
+ai-smil1: ds4: prefill: 0.13 t/s, generation: 17.83 t/s
+ai-smil2: ds4: prefill: 0.13 t/s, generation: 17.84 t/s (64 tokens)
+ai-smil2: ds4: prefill: 0.13 t/s, generation: 17.76 t/s (200 tokens)
 ```
 
 The 17 tok/s direct target is reached by keeping routed-MoE, attention-output,
-and Q/KV scratch tensors local to each layer's assigned GPU with
+Q/KV, and compressor/indexer scratch tensors local to each layer's assigned GPU
+with
 `DS4_CUDA_LOCAL_ROUTED_SCRATCH=1`, `DS4_CUDA_LOCAL_ATTN_SCRATCH=1`, and
-`DS4_CUDA_LOCAL_QKV_SCRATCH=1`. The 512-thread fused MoE gate/up+midq decode
-kernel remains part of the fast path; the old 256-thread kernel remains
+`DS4_CUDA_LOCAL_QKV_SCRATCH=1`, plus
+`DS4_CUDA_LOCAL_COMPRESSOR_SCRATCH=1`. The 512-thread fused MoE gate/up+midq
+decode kernel remains part of the fast path; the old 256-thread kernel remains
 available for comparison with
 `DS4_CUDA_MOE_GATEUP_THREADS256=1`.
 
@@ -21,12 +24,14 @@ route. The latest synchronized profile still has most remaining time inside the
 layer loop:
 
 ```text
-routed_moe          0.483 ms/layer
-attn_output         0.284 ms/layer
-q_path              0.189 ms/layer
-compressor_indexer  0.154 ms/layer
-shared_gate_up      0.100 ms/layer
-shared_down         0.068 ms/layer
+routed_moe          0.298 ms/layer
+attn_output         0.239 ms/layer
+q_path              0.164 ms/layer
+ffn_hc_pre          0.124 ms/layer
+attn_hc_pre         0.119 ms/layer
+shared_gate_up      0.103 ms/layer
+compressor_indexer  0.097 ms/layer
+shared_down         0.069 ms/layer
 ```
 
 ## Most Realistic Routes
@@ -120,7 +125,17 @@ shared_down         0.068 ms/layer
    `17.26 t/s` for 200 tokens on ai-smil1. ai-smil2 matched the 64-token hash
    at `17.26 t/s`.
 
-3d. Keep the NVLink-pair-aware device order.
+3d. Keep compressor/indexer scratch local to layer devices.
+
+   `DS4_CUDA_LOCAL_COMPRESSOR_SCRATCH=1` keeps the one-token compressor and
+   indexer scratch on the layer device: compressor KV/gate projections, indexer
+   query/weights/scores, and top-k selection output. With the other locality
+   defaults enabled, it preserved the deterministic 64-token and 200-token
+   hashes and measured `17.83 t/s` for both 64 and 200 tokens on ai-smil1.
+   ai-smil2 matched the 64-token hash at `17.84 t/s` and the 200-token hash at
+   `17.76 t/s`.
+
+3e. Keep the NVLink-pair-aware device order.
 
    The runtime assigns contiguous layer ranges according to
    `DS4_CUDA_DEVICES` and `DS4_CUDA_TENSOR_SPLIT`; it does not dynamically

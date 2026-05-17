@@ -8107,6 +8107,12 @@ typedef struct {
     ds4_gpu_tensor *layer_q[DS4_N_LAYER];
     ds4_gpu_tensor *layer_kv_raw[DS4_N_LAYER];
     ds4_gpu_tensor *layer_kv[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_comp_kv_cur[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_comp_sc_cur[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_indexer_q[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_indexer_weights[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_indexer_scores[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_comp_selected[DS4_N_LAYER];
 
     /* Speculative decoding scratch.  MTP is allowed to mutate graph state only
      * if the target verifier can either commit it or restore the saved
@@ -8368,6 +8374,14 @@ static void metal_graph_free(ds4_gpu_graph *g) {
         ds4_gpu_tensor_free(g->layer_qr[il]);
         ds4_gpu_tensor_free(g->layer_attn_norm[il]);
         ds4_gpu_tensor_free(g->layer_attn_cur[il]);
+    }
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        ds4_gpu_tensor_free(g->layer_comp_selected[il]);
+        ds4_gpu_tensor_free(g->layer_indexer_scores[il]);
+        ds4_gpu_tensor_free(g->layer_indexer_weights[il]);
+        ds4_gpu_tensor_free(g->layer_indexer_q[il]);
+        ds4_gpu_tensor_free(g->layer_comp_sc_cur[il]);
+        ds4_gpu_tensor_free(g->layer_comp_kv_cur[il]);
     }
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
         ds4_gpu_tensor_free(g->spec_attn_state_kv[il]);
@@ -8742,6 +8756,7 @@ static bool metal_graph_alloc_raw_cap(
     const bool local_routed_scratch = getenv("DS4_CUDA_LOCAL_ROUTED_SCRATCH") != NULL;
     const bool local_attn_scratch = getenv("DS4_CUDA_LOCAL_ATTN_SCRATCH") != NULL;
     const bool local_qkv_scratch = getenv("DS4_CUDA_LOCAL_QKV_SCRATCH") != NULL;
+    const bool local_compressor_scratch = getenv("DS4_CUDA_LOCAL_COMPRESSOR_SCRATCH") != NULL;
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
         if (ds4_gpu_use_layer_device(il, DS4_N_LAYER) == 0) {
             state_init_ok = false;
@@ -8785,6 +8800,22 @@ static bool metal_graph_alloc_raw_cap(
                             g->layer_q[il] &&
                             g->layer_kv_raw[il] &&
                             g->layer_kv[il];
+        }
+        if (local_compressor_scratch) {
+            g->layer_comp_kv_cur[il] = ds4_gpu_tensor_alloc(comp_width_max * sizeof(float));
+            g->layer_comp_sc_cur[il] = ds4_gpu_tensor_alloc(comp_width_max * sizeof(float));
+            g->layer_indexer_q[il] = ds4_gpu_tensor_alloc(indexer_q_dim * sizeof(float));
+            g->layer_indexer_weights[il] = ds4_gpu_tensor_alloc((uint64_t)DS4_N_INDEXER_HEAD * sizeof(float));
+            g->layer_indexer_scores[il] = ds4_gpu_tensor_alloc((uint64_t)g->comp_cap * sizeof(float));
+            g->layer_comp_selected[il] = ds4_gpu_tensor_alloc(
+                    (uint64_t)(DS4_N_INDEXER_TOP_K ? DS4_N_INDEXER_TOP_K : 1u) * sizeof(uint32_t));
+            state_init_ok = state_init_ok &&
+                            g->layer_comp_kv_cur[il] &&
+                            g->layer_comp_sc_cur[il] &&
+                            g->layer_indexer_q[il] &&
+                            g->layer_indexer_weights[il] &&
+                            g->layer_indexer_scores[il] &&
+                            g->layer_comp_selected[il];
         }
         g->layer_raw_cache[il] = metal_graph_alloc_kv_cache_tensor(
                 managed_kv_cache,
@@ -9283,6 +9314,12 @@ static bool metal_graph_encode_decode_layer(
     ds4_gpu_tensor *saved_q = g->q;
     ds4_gpu_tensor *saved_kv_raw = g->kv_raw;
     ds4_gpu_tensor *saved_kv = g->kv;
+    ds4_gpu_tensor *saved_comp_kv_cur = g->comp_kv_cur;
+    ds4_gpu_tensor *saved_comp_sc_cur = g->comp_sc_cur;
+    ds4_gpu_tensor *saved_indexer_q = g->indexer_q;
+    ds4_gpu_tensor *saved_indexer_weights = g->indexer_weights;
+    ds4_gpu_tensor *saved_indexer_scores = g->indexer_scores;
+    ds4_gpu_tensor *saved_comp_selected = g->comp_selected;
     if (g->layer_attn_cur[il]) {
         g->attn_cur = g->layer_attn_cur[il];
         g->attn_norm = g->layer_attn_norm[il];
@@ -9291,6 +9328,14 @@ static bool metal_graph_encode_decode_layer(
         g->q = g->layer_q[il];
         g->kv_raw = g->layer_kv_raw[il];
         g->kv = g->layer_kv[il];
+    }
+    if (g->layer_comp_kv_cur[il]) {
+        g->comp_kv_cur = g->layer_comp_kv_cur[il];
+        g->comp_sc_cur = g->layer_comp_sc_cur[il];
+        g->indexer_q = g->layer_indexer_q[il];
+        g->indexer_weights = g->layer_indexer_weights[il];
+        g->indexer_scores = g->layer_indexer_scores[il];
+        g->comp_selected = g->layer_comp_selected[il];
     }
 
     bool ok = true;
@@ -10037,6 +10082,14 @@ static bool metal_graph_encode_decode_layer(
         g->q = saved_q;
         g->kv_raw = saved_kv_raw;
         g->kv = saved_kv;
+    }
+    if (g->layer_comp_kv_cur[il]) {
+        g->comp_kv_cur = saved_comp_kv_cur;
+        g->comp_sc_cur = saved_comp_sc_cur;
+        g->indexer_q = saved_indexer_q;
+        g->indexer_weights = saved_indexer_weights;
+        g->indexer_scores = saved_indexer_scores;
+        g->comp_selected = saved_comp_selected;
     }
     return ok;
 }
