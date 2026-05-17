@@ -8092,6 +8092,11 @@ typedef struct {
     ds4_gpu_tensor *layer_index_comp_cache[DS4_N_LAYER];
     ds4_gpu_tensor *layer_index_state_kv[DS4_N_LAYER];
     ds4_gpu_tensor *layer_index_state_score[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_routed_gate[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_routed_up[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_routed_mid[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_routed_down[DS4_N_LAYER];
+    ds4_gpu_tensor *layer_routed_out[DS4_N_LAYER];
 
     /* Speculative decoding scratch.  MTP is allowed to mutate graph state only
      * if the target verifier can either commit it or restore the saved
@@ -8332,6 +8337,13 @@ static void metal_graph_free(ds4_gpu_graph *g) {
     }
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
         ds4_gpu_tensor_free(g->layer_index_state_score[il]);
+    }
+    for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
+        ds4_gpu_tensor_free(g->layer_routed_out[il]);
+        ds4_gpu_tensor_free(g->layer_routed_down[il]);
+        ds4_gpu_tensor_free(g->layer_routed_mid[il]);
+        ds4_gpu_tensor_free(g->layer_routed_up[il]);
+        ds4_gpu_tensor_free(g->layer_routed_gate[il]);
     }
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
         ds4_gpu_tensor_free(g->spec_attn_state_kv[il]);
@@ -8703,10 +8715,24 @@ static bool metal_graph_alloc_raw_cap(
     g->kv_raw = ds4_gpu_tensor_alloc((uint64_t)DS4_N_HEAD_DIM * sizeof(float));
     g->kv = ds4_gpu_tensor_alloc((uint64_t)DS4_N_HEAD_DIM * sizeof(float));
     bool state_init_ok = true;
+    const bool local_routed_scratch = getenv("DS4_CUDA_LOCAL_ROUTED_SCRATCH") != NULL;
     for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
         if (ds4_gpu_use_layer_device(il, DS4_N_LAYER) == 0) {
             state_init_ok = false;
             break;
+        }
+        if (local_routed_scratch) {
+            g->layer_routed_gate[il] = ds4_gpu_tensor_alloc((uint64_t)DS4_N_EXPERT_USED * routed_mid_dim * sizeof(float));
+            g->layer_routed_up[il] = ds4_gpu_tensor_alloc((uint64_t)DS4_N_EXPERT_USED * routed_mid_dim * sizeof(float));
+            g->layer_routed_mid[il] = ds4_gpu_tensor_alloc((uint64_t)DS4_N_EXPERT_USED * routed_mid_dim * sizeof(float));
+            g->layer_routed_down[il] = ds4_gpu_tensor_alloc((uint64_t)DS4_N_EXPERT_USED * DS4_N_EMBD * sizeof(float));
+            g->layer_routed_out[il] = ds4_gpu_tensor_alloc((uint64_t)DS4_N_EMBD * sizeof(float));
+            state_init_ok = state_init_ok &&
+                            g->layer_routed_gate[il] &&
+                            g->layer_routed_up[il] &&
+                            g->layer_routed_mid[il] &&
+                            g->layer_routed_down[il] &&
+                            g->layer_routed_out[il];
         }
         g->layer_raw_cache[il] = metal_graph_alloc_kv_cache_tensor(
                 managed_kv_cache,
@@ -8861,6 +8887,13 @@ static bool metal_graph_alloc_raw_cap(
     for (uint32_t il = 0; layer_cache_ok && il < DS4_N_LAYER; il++) {
         layer_cache_ok = g->layer_raw_cache[il] != NULL;
         const uint32_t ratio = ds4_layer_compress_ratio(il);
+        if (layer_cache_ok && local_routed_scratch) {
+            layer_cache_ok = g->layer_routed_gate[il] != NULL &&
+                             g->layer_routed_up[il] != NULL &&
+                             g->layer_routed_mid[il] != NULL &&
+                             g->layer_routed_down[il] != NULL &&
+                             g->layer_routed_out[il] != NULL;
+        }
         if (layer_cache_ok && ratio != 0) {
             layer_cache_ok = g->layer_attn_comp_cache[il] != NULL &&
                              g->layer_attn_state_kv[il] != NULL &&
@@ -9783,11 +9816,16 @@ static bool metal_graph_encode_decode_layer(
         metal_graph_debug_dump_i32_tensor("ffn_moe_topk", g->router_selected, DS4_N_EXPERT_USED, il, pos);
         metal_graph_debug_dump_tensor("ffn_moe_weights_scaled", g->router_weights, DS4_N_EXPERT_USED, il, pos);
     }
-    if (ok) ok = ds4_gpu_routed_moe_one_tensor(g->routed_out,
-                                                 g->routed_gate,
-                                                 g->routed_up,
-                                                 g->routed_mid,
-                                                 g->routed_down,
+    ds4_gpu_tensor *routed_gate = g->layer_routed_gate[il] ? g->layer_routed_gate[il] : g->routed_gate;
+    ds4_gpu_tensor *routed_up = g->layer_routed_up[il] ? g->layer_routed_up[il] : g->routed_up;
+    ds4_gpu_tensor *routed_mid = g->layer_routed_mid[il] ? g->layer_routed_mid[il] : g->routed_mid;
+    ds4_gpu_tensor *routed_down = g->layer_routed_down[il] ? g->layer_routed_down[il] : g->routed_down;
+    ds4_gpu_tensor *routed_out = g->layer_routed_out[il] ? g->layer_routed_out[il] : g->routed_out;
+    if (ok) ok = ds4_gpu_routed_moe_one_tensor(routed_out,
+                                                 routed_gate,
+                                                 routed_up,
+                                                 routed_mid,
+                                                 routed_down,
                                                  model->map, model->size,
                                                  layer->ffn_gate_exps->abs_offset,
                                                  layer->ffn_up_exps->abs_offset,
@@ -9803,21 +9841,21 @@ static bool metal_graph_encode_decode_layer(
                                                  DS4_N_EXPERT_USED, DS4_SWIGLU_CLAMP_EXP, g->ffn_norm) != 0;
     DS4_METAL_PROFILE_DECODE_STAGE("routed_moe");
     if (ok) {
-        metal_graph_debug_dump_tensor("ffn_moe_gate_clamped", g->routed_gate,
+        metal_graph_debug_dump_tensor("ffn_moe_gate_clamped", routed_gate,
                                       (uint64_t)DS4_N_EXPERT_USED * down_in_dim, il, pos);
-        metal_graph_debug_dump_tensor("ffn_moe_up_clamped", g->routed_up,
-                                      (uint64_t)DS4_N_EXPERT_USED * down_in_dim, il, pos);
-    }
-    if (ok) {
-        metal_graph_debug_dump_tensor("ffn_moe_weighted_swiglu", g->routed_mid,
+        metal_graph_debug_dump_tensor("ffn_moe_up_clamped", routed_up,
                                       (uint64_t)DS4_N_EXPERT_USED * down_in_dim, il, pos);
     }
     if (ok) {
-        metal_graph_debug_dump_tensor("ffn_moe_down", g->routed_down,
+        metal_graph_debug_dump_tensor("ffn_moe_weighted_swiglu", routed_mid,
+                                      (uint64_t)DS4_N_EXPERT_USED * down_in_dim, il, pos);
+    }
+    if (ok) {
+        metal_graph_debug_dump_tensor("ffn_moe_down", routed_down,
                                       (uint64_t)DS4_N_EXPERT_USED * DS4_N_EMBD, il, pos);
     }
     if (ok) {
-        metal_graph_debug_dump_tensor("ffn_moe_out", g->routed_out, DS4_N_EMBD, il, pos);
+        metal_graph_debug_dump_tensor("ffn_moe_out", routed_out, DS4_N_EMBD, il, pos);
     }
     const bool fuse_shared_gate_up =
         !g->quality &&
@@ -9857,7 +9895,7 @@ static bool metal_graph_encode_decode_layer(
                                                          shared_dim,
                                                          DS4_N_EMBD,
                                                          g->shared_mid,
-                                                         g->routed_out,
+                                                         routed_out,
                                                          g->after_attn_hc,
                                                          g->hc_split,
                                                          DS4_N_EMBD,
@@ -9874,7 +9912,7 @@ static bool metal_graph_encode_decode_layer(
     }
     if (ok && keep_ffn_out) {
         ok = metal_graph_ensure_ffn_out(g) &&
-             ds4_gpu_add_tensor(g->ffn_out, g->shared_out, g->routed_out, DS4_N_EMBD) != 0;
+             ds4_gpu_add_tensor(g->ffn_out, g->shared_out, routed_out, DS4_N_EMBD) != 0;
     }
     if (ok && keep_ffn_out) {
         metal_graph_debug_dump_tensor("ffn_out", g->ffn_out, DS4_N_EMBD, il, pos);
@@ -9892,7 +9930,7 @@ static bool metal_graph_encode_decode_layer(
                                         DS4_N_HC) != 0;
     } else if (ok && !fuse_shared_down_hc) {
         ok = ds4_gpu_hc_expand_add_split_tensor(g->after_ffn_hc,
-                                                  g->routed_out,
+                                                  routed_out,
                                                   g->shared_out,
                                                   g->after_attn_hc,
                                                   g->hc_split,
