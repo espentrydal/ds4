@@ -3,15 +3,16 @@
 Current best verified default one-node decode result:
 
 ```text
-ai-smil1: ds4: prefill: 0.13 t/s, generation: 16.54 t/s
-ai-smil2: ds4: prefill: 0.13 t/s, generation: 16.68 t/s
+ai-smil1: ds4: prefill: 0.13 t/s, generation: 17.26 t/s
+ai-smil2: ds4: prefill: 0.13 t/s, generation: 17.26 t/s
 ```
 
-The 16 tok/s direct target is reached by keeping routed-MoE and attention-output
-scratch tensors local to each layer's assigned GPU with
-`DS4_CUDA_LOCAL_ROUTED_SCRATCH=1` and `DS4_CUDA_LOCAL_ATTN_SCRATCH=1`. The
-512-thread fused MoE gate/up+midq decode kernel remains part of the fast path;
-the old 256-thread kernel remains available for comparison with
+The 17 tok/s direct target is reached by keeping routed-MoE, attention-output,
+and Q/KV scratch tensors local to each layer's assigned GPU with
+`DS4_CUDA_LOCAL_ROUTED_SCRATCH=1`, `DS4_CUDA_LOCAL_ATTN_SCRATCH=1`, and
+`DS4_CUDA_LOCAL_QKV_SCRATCH=1`. The 512-thread fused MoE gate/up+midq decode
+kernel remains part of the fast path; the old 256-thread kernel remains
+available for comparison with
 `DS4_CUDA_MOE_GATEUP_THREADS256=1`.
 
 The best reserve-tuning one-off measured `14.91 t/s`, but follow-up lower
@@ -108,6 +109,26 @@ shared_down         0.068 ms/layer
    combination with local routed-MoE scratch, it preserved deterministic output
    hashes and measured `16.64 t/s` for 64 tokens and `16.54 t/s` for 200 tokens
    on ai-smil1. ai-smil2 matched the 64-token hash at `16.68 t/s`.
+
+3c. Keep Q/KV scratch local to layer devices.
+
+   `DS4_CUDA_LOCAL_QKV_SCRATCH=1` extends the same locality fix to the front of
+   the attention path: attention pre-HC scratch, normalized attention input, QR,
+   normalized QR, Q, raw KV, and KV tensors. With routed-MoE and
+   attention-output locality already enabled, it preserved the deterministic
+   64-token and 200-token hashes and measured `17.23 t/s` for 64 tokens and
+   `17.26 t/s` for 200 tokens on ai-smil1. ai-smil2 matched the 64-token hash
+   at `17.26 t/s`.
+
+3d. Keep the NVLink-pair-aware device order.
+
+   The runtime assigns contiguous layer ranges according to
+   `DS4_CUDA_DEVICES` and `DS4_CUDA_TENSOR_SPLIT`; it does not dynamically
+   model topology. On these nodes the correct topology-aware order is
+   `0,1,2,3`, because GPU0-GPU1 and GPU2-GPU3 are NVLink pairs. Equal split
+   weights map the 43 layers as 0-10, 11-21, 22-31, and 32-42, so two of the
+   three inter-GPU layer handoffs stay inside NVLink pairs and only the middle
+   handoff crosses the slower `SYS` path.
 
 4. Split-output cold-start instrumentation.
 

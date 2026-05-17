@@ -10,6 +10,7 @@ DS4_CUDA_TENSOR_SPLIT=8.2,8.2,8.2,8.2
 DS4_CUDA_WEIGHT_ARENA_CHUNK_MB=512
 DS4_CUDA_LOCAL_ROUTED_SCRATCH=1
 DS4_CUDA_LOCAL_ATTN_SCRATCH=1
+DS4_CUDA_LOCAL_QKV_SCRATCH=1
 DS4_METAL_DISABLE_SHARED_DOWN_HC_FUSION=1
 make cuda-v100  # includes -Xptxas=-maxrregcount=64
 ```
@@ -18,13 +19,20 @@ Use `scripts/server-ds4-flash-v100-1node.sh` for OpenAI/Anthropic-compatible
 serving, or `scripts/profile-ds4-flash-v100-1node.sh` for a reproducible decode
 profile run.
 
-The latest 2026-05-17 scratch locality changes keep per-layer routed MoE and
-attention-output scratch tensors on each layer's assigned GPU. With
-`DS4_CUDA_LOCAL_ROUTED_SCRATCH=1` and `DS4_CUDA_LOCAL_ATTN_SCRATCH=1`,
-deterministic checks preserved the existing 64-token and 200-token output
-hashes while raising direct 32K decode to `16.64 t/s` for 64 tokens and
-`16.54 t/s` for 200 tokens on ai-smil1. ai-smil2 matched the 64-token output
-hash and measured `16.68 t/s`.
+The latest 2026-05-17 scratch locality changes keep per-layer routed MoE,
+attention-output, and Q/KV scratch tensors on each layer's assigned GPU. With
+`DS4_CUDA_LOCAL_ROUTED_SCRATCH=1`, `DS4_CUDA_LOCAL_ATTN_SCRATCH=1`, and
+`DS4_CUDA_LOCAL_QKV_SCRATCH=1`, deterministic checks preserved the existing
+64-token and 200-token output hashes while raising direct 32K decode to
+`17.23 t/s` for 64 tokens and `17.26 t/s` for 200 tokens on ai-smil1. ai-smil2
+matched the 64-token output hash and measured `17.26 t/s`.
+
+The four-GPU split is topology-aware through device ordering. Both nodes have
+NVLink pairs GPU0-GPU1 and GPU2-GPU3, while cross-pair GPU traffic is `SYS`.
+With `DS4_CUDA_DEVICES=0,1,2,3` and equal split weights, the 43 decode layers
+map contiguously as 0-10 on GPU0, 11-21 on GPU1, 22-31 on GPU2, and 32-42 on
+GPU3. That gives NVLink handoffs at 10->11 and 31->32, with only the unavoidable
+cross-pair handoff at 21->22.
 
 Production serving now defaults to `DS4_CTX=131072` to reduce VRAM pressure and
 protect decode speed. The historical measurements below were mostly taken at
