@@ -6412,11 +6412,9 @@ static bool responses_sse_completed(int fd, const request *r,
         }
     }
     buf_putc(&b, ']');
-    buf_printf(&b,
-        ",\"usage\":{\"input_tokens\":%d,\"input_tokens_details\":{\"cached_tokens\":0},"
-        "\"output_tokens\":%d,\"output_tokens_details\":{\"reasoning_tokens\":0},"
-        "\"total_tokens\":%d}}}",
-        prompt_tokens, completion_tokens, prompt_tokens + completion_tokens);
+    buf_puts(&b, ",\"usage\":");
+    append_responses_usage_json(&b, r, prompt_tokens, completion_tokens);
+    buf_puts(&b, "}}");
     bool ok = responses_sse_emit_event(fd, st, b.ptr);
     buf_free(&b);
     return ok;
@@ -15504,6 +15502,7 @@ static void ds4_server_unit_tests_run(void) {
     test_anthropic_tool_stream_sends_live_tool_use();
     test_openai_tool_stream_sends_incremental_text();
     test_openai_stream_usage_reports_cache_details();
+    test_responses_usage_reports_cache_details();
     test_openai_chat_stream_splits_reasoning_without_tools();
     test_openai_tool_stream_sends_partial_arguments();
     test_openai_tool_stream_waits_for_incomplete_tool_tags();
