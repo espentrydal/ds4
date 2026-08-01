@@ -958,6 +958,15 @@ static bool server_model_alias_known(const char *id) {
             !strcmp(id, "zai/glm-5.2-reasoner"));
 }
 
+/* A model id is served only when it matches the loaded engine: DS4 engines
+ * expose exactly one id (flash or pro, per the loaded GGUF), GLM engines
+ * expose their alias family. */
+static bool server_model_id_served(ds4_engine *engine, const char *id) {
+    if (!server_model_alias_known(id)) return false;
+    if (ds4_engine_is_glm_dsa(engine)) return true;
+    return !strcmp(id, server_model_id_from_engine(engine));
+}
+
 static void stop_list_clear(stop_list *stops) {
     for (int i = 0; i < stops->len; i++) free(stops->v[i]);
     stops->len = 0;
@@ -12351,9 +12360,7 @@ static bool send_models(server *s, int fd) {
         buf_putc(&b, ',');
         append_model_json(&b, s, "glm-5.2-reasoner");
     } else {
-        append_model_json(&b, s, "deepseek-v4-flash");
-        buf_putc(&b, ',');
-        append_model_json(&b, s, "deepseek-v4-pro");
+        append_model_json(&b, s, server_model_id_from_engine(s->engine));
     }
     buf_puts(&b, "]}\n");
     bool ok = http_response(fd, s->enable_cors, 200, "application/json", b.ptr);
@@ -12397,7 +12404,7 @@ static void *client_main(void *arg) {
     const size_t model_path_prefix_len = strlen(model_path_prefix);
     if (!strcmp(hr.method, "GET") &&
         !strncmp(hr.path, model_path_prefix, model_path_prefix_len) &&
-        server_model_alias_known(hr.path + model_path_prefix_len))
+        server_model_id_served(s->engine, hr.path + model_path_prefix_len))
     {
         send_model(s, fd, hr.path + model_path_prefix_len);
         http_request_free(&hr);
