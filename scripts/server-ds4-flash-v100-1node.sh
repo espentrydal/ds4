@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Production default favors decode speed over maximum context. Override DS4_CTX
 # for one-off large-context runs.
-MODEL=${DS4_MODEL:-$HOME/models/deepseek-v4-flash/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf}
+MODEL=${DS4_MODEL:-$HOME/models/deepseek-v4-flash/DeepSeek-V4-Flash-Layers37-42Q4KExperts-OtherExpertLayersIQ2XXSGateUp-Q2KDown-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-fixed-0731.gguf}
 BIN=${DS4_BIN:-$HOME/ds4/ds4-server}
 HOST=${DS4_HOST:-0.0.0.0}
 PORT=${DS4_PORT:-8080}
