@@ -10,12 +10,12 @@ PORT=${DS4_PORT:-8080}
 CTX=${DS4_CTX:-131072}
 KV_DIR=${DS4_KV_DIR:-$HOME/ds4-kv}
 KV_MB=${DS4_KV_MB:-8192}
+GPU_DEVICES=${DS4_CUDA_DEVICES:-0,2,1,3}
+GPU_VRAM=${DS4_GPU_VRAM:-auto}
 
 [ -f /opt/rh/gcc-toolset-13/enable ] && source /opt/rh/gcc-toolset-13/enable
 
 export DS4_CUDA_SPLIT_OUTPUT_HEAD=${DS4_CUDA_SPLIT_OUTPUT_HEAD:-1}
-export DS4_CUDA_DEVICES=${DS4_CUDA_DEVICES:-0,1,2,3}
-export DS4_CUDA_TENSOR_SPLIT=${DS4_CUDA_TENSOR_SPLIT:-8.2,8.2,8.2,8.2}
 export DS4_CUDA_WEIGHT_ARENA_CHUNK_MB=${DS4_CUDA_WEIGHT_ARENA_CHUNK_MB:-512}
 export DS4_CUDA_LOCAL_ROUTED_SCRATCH=${DS4_CUDA_LOCAL_ROUTED_SCRATCH:-1}
 export DS4_CUDA_LOCAL_ATTN_SCRATCH=${DS4_CUDA_LOCAL_ATTN_SCRATCH:-1}
@@ -26,6 +26,9 @@ export DS4_METAL_DISABLE_SHARED_DOWN_HC_FUSION=${DS4_METAL_DISABLE_SHARED_DOWN_H
 
 exec "$BIN" \
     --cuda \
+    --cuda-tensor-parallel \
+    --gpu-vram "$GPU_VRAM" \
+    --gpu-devices "$GPU_DEVICES" \
     --model "$MODEL" \
     --host "$HOST" --port "$PORT" \
     --ctx "$CTX" \
