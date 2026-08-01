@@ -7,12 +7,12 @@ OUT=${DS4_PROFILE_OUT:-/tmp/ds4-profile.out}
 ERR=${DS4_PROFILE_ERR:-/tmp/ds4-profile.err}
 TOKENS=${DS4_PROFILE_TOKENS:-8}
 PROMPT=${DS4_PROFILE_PROMPT:-Write a comma-separated list of common English nouns.}
+GPU_DEVICES=${DS4_CUDA_DEVICES:-0,2,1,3}
+GPU_VRAM=${DS4_GPU_VRAM:-auto}
 
 [ -f /opt/rh/gcc-toolset-13/enable ] && source /opt/rh/gcc-toolset-13/enable
 
 export DS4_CUDA_SPLIT_OUTPUT_HEAD=${DS4_CUDA_SPLIT_OUTPUT_HEAD:-1}
-export DS4_CUDA_DEVICES=${DS4_CUDA_DEVICES:-0,1,2,3}
-export DS4_CUDA_TENSOR_SPLIT=${DS4_CUDA_TENSOR_SPLIT:-8.2,8.2,8.2,8.2}
 export DS4_CUDA_WEIGHT_ARENA_CHUNK_MB=${DS4_CUDA_WEIGHT_ARENA_CHUNK_MB:-512}
 export DS4_CUDA_LOCAL_ROUTED_SCRATCH=${DS4_CUDA_LOCAL_ROUTED_SCRATCH:-1}
 export DS4_CUDA_LOCAL_ATTN_SCRATCH=${DS4_CUDA_LOCAL_ATTN_SCRATCH:-1}
@@ -24,7 +24,10 @@ export DS4_METAL_GRAPH_TOKEN_PROFILE=${DS4_METAL_GRAPH_TOKEN_PROFILE:-1}
 export DS4_METAL_DECODE_STAGE_PROFILE=${DS4_METAL_DECODE_STAGE_PROFILE:-1}
 export DS4_CUDA_MOE_PROFILE=${DS4_CUDA_MOE_PROFILE:-1}
 
-"$BIN" --cuda --model "$MODEL" --ctx 32768 --think --temp 1 --seed 1 -n "$TOKENS" -p "$PROMPT" >"$OUT" 2>"$ERR"
+"$BIN" --cuda --cuda-tensor-parallel \
+    --gpu-vram "$GPU_VRAM" --gpu-devices "$GPU_DEVICES" \
+    --model "$MODEL" --ctx 32768 --think --temp 1 --seed 1 \
+    -n "$TOKENS" -p "$PROMPT" >"$OUT" 2>"$ERR"
 
 printf "generation\n"
 grep "generation:" "$ERR" || true
