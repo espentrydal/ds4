@@ -1,9 +1,13 @@
 CC ?= cc
 UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
 
 ifeq ($(UNAME_S),Darwin)
 NATIVE_CPU_FLAG ?= -mcpu=native
 SAMPLING_TEST :=
+else ifeq ($(UNAME_M),ppc64le)
+NATIVE_CPU_FLAG ?= -mcpu=native
+SAMPLING_TEST := tests/test_sampling
 else
 NATIVE_CPU_FLAG ?= -march=native
 SAMPLING_TEST := tests/test_sampling
