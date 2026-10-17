@@ -29247,7 +29247,7 @@ static void *cuda_stream_prefetch_read(void *) {
                 cudaMemcpyHostToDevice, p.stream) == cudaSuccess &&
                 cudaEventRecord(p.ready[ring], p.stream) == cudaSuccess;
 #if defined(POSIX_FADV_DONTNEED)
-            if (p.direct_fd < 0)
+            if (p.direct_fd < 0 && getenv("DS4_CUDA_KEEP_MODEL_PAGES") == NULL)
                 (void)posix_fadvise(p.fd, copy.offset + offset, bytes, POSIX_FADV_DONTNEED);
 #endif
             p.bytes += bytes;

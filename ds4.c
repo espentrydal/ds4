@@ -2793,10 +2793,14 @@ static void model_unmap_engram(ds4_model *m) {
     if (!tables[0] || !tables[1]) ds4_die("V4.1 GGUF is missing Engram tables");
     const uint64_t start = tables[0]->abs_offset;
     const long page = sysconf(_SC_PAGESIZE);
-    if (page <= 0 || start % (uint64_t)page || resident_end > start ||
+    if (page <= 0 || resident_end > start ||
         tables[1]->abs_offset < start + tables[0]->bytes)
-        ds4_die("V4.1 Engram tables must follow the page-aligned main weights");
-    if (munmap((void *)(m->map + start), (size_t)(m->size - start)) != 0)
+        ds4_die("V4.1 Engram tables must follow the main weights");
+    /* GGUF alignment can be finer than the host page (64 KiB on ppc64le), so
+     * unmap from the next page boundary and leave the partial page unused. */
+    const uint64_t unmap_start = (start + (uint64_t)page - 1) / (uint64_t)page * (uint64_t)page;
+    if (unmap_start < m->size &&
+        munmap((void *)(m->map + unmap_start), (size_t)(m->size - unmap_start)) != 0)
         ds4_die_errno("cannot unmap disk-only region", "Engram");
     m->size = start;
 }
