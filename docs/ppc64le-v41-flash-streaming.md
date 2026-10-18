@@ -173,6 +173,41 @@ Expect about 238 prefill tokens/s and 12.7 decode tokens/s. Compare
 is expected); against a different schedule, expect the KL values above, not
 equality.
 
+## Decode graphs and two-GPU decode
+
+Profiling decode (nsys, one GPU, 448 slots) showed the GPU busy for only about
+12 of 72 ms per token: about 30 ms went to blocking expert uploads, about 20 ms
+to the host waiting at the expert-cache lookup, and the rest to launching about
+2900 small kernels (about 7 us each from this POWER9 host).
+
+`DS4_V41_STREAM_GRAPHS=1` replays the dense part of each decode layer as CUDA
+graphs (attention input, attention output, router and shared expert, layer end).
+Attention itself (position dependent) and the expert-cache lookup stay eager.
+Gaps between kernels inside a graph are about 0.3 us. Results are the captured
+kernels' own: text and logprobs are identical with and without it (96 tokens
+after a 2758-token prompt, one GPU and two). Off by default.
+
+Decode speed, hash-table prompt, 8k context (tokens/s):
+
+| Setup | 448 slots | about 1000 slots |
+|---|---:|---:|
+| One GPU, eager | 14.2-14.8 | 15.9-16.8 |
+| One GPU, graphs | 15.0 | |
+| Two GPUs (exact TP), eager | 17.0 | 18.9 |
+| Two GPUs (exact TP), graphs | 17.4 | 19.3-19.7 |
+
+Two GPUs use `DS4_CUDA_V41_TP_REPLICATE_ATTN=1 DS4_CUDA_V41_TP_ORDERED_SUM=1`
+with `--tensor-parallel`; each GPU has its own host link and cache, so the hit
+rate rises from 59% to 72% at 1000 slots. Graphs apply to this mode too.
+
+Cache size is limited by memory, not by choice: the 1000-slot figures need a
+tiny prompt. A real prompt also allocates 3.4 GiB of compact prefill experts
+after the cache exists, so a cache sized to all free memory (a large
+`--ssd-streaming-cache-experts` with the 1 GiB reserve) runs out of memory
+during the first long prefill. Keep explicit slot counts that leave that room:
+448 at 64k (tested), probably 600-700 at 8k-16k (not yet tested with full
+prompts).
+
 ## Decode experiments that did not help
 
 - **Router look-ahead prefetch.** Running the next layer's router on this
