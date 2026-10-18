@@ -40893,9 +40893,45 @@ typedef struct {
 #undef DS41_ROW_FIELD
 } ds41_prefill_row;
 
+/* Trace one explicit position, not every row of a long prefill. Reuse the
+ * scalar stage names so different sweep schedules can be compared directly. */
+static void ds41_debug_dump_batch_tensor(const char *name, ds4_gpu_tensor *batch,
+                                          uint32_t width, uint32_t count,
+                                          uint32_t il, uint32_t start) {
+    const metal_graph_debug_config *cfg = metal_graph_debug_get_config();
+    if (!cfg->prefix || !cfg->pos_set || cfg->pos < start ||
+        cfg->pos - start >= count || !metal_graph_debug_wants(name, il, cfg->pos))
+        return;
+    /* DS4_V41_TRACE_WHOLE_BATCH dumps every row of the sweep containing the
+     * selected position, to find which row first depends on the schedule. */
+    const bool whole = getenv("DS4_V41_TRACE_WHOLE_BATCH") != NULL;
+    const uint64_t bytes = (uint64_t)width * sizeof(float);
+    ds4_gpu_tensor *row = ds4_gpu_tensor_view(batch, whole ? 0 : (cfg->pos - start) * bytes,
+                                              whole ? count * bytes : bytes);
+    if (!row) {
+        fprintf(stderr, "ds4: cannot view %s layer %u pos %u for prefill dump\n",
+                name, il, cfg->pos);
+        return;
+    }
+    metal_graph_debug_dump_tensor(name, row, whole ? (uint64_t)width * count : width, il, cfg->pos);
+    ds4_gpu_tensor_free(row);
+}
+
+/* Dump a persistent cache once, after the sweep that contains the traced row. */
+static void ds41_debug_dump_cache(const char *name, ds4_gpu_tensor *cache, uint64_t floats,
+                                   uint32_t il, uint32_t start, uint32_t count) {
+    const metal_graph_debug_config *cfg = metal_graph_debug_get_config();
+    if (cfg->prefix && cfg->pos_set && cfg->pos >= start && cfg->pos - start < count)
+        metal_graph_debug_dump_tensor(name, cache, floats, il, cfg->pos);
+}
+
 static uint32_t ds41_prefill_limit(uint32_t ctx) {
-    const uint32_t limit = ctx < 8192u || getenv("DS4_METAL_DISABLE_V41_WIDE_CHUNK") ? 2048u :
+    uint32_t limit = ctx < 8192u || getenv("DS4_METAL_DISABLE_V41_WIDE_CHUNK") ? 2048u :
         (ctx < 16384u || getenv("DS4_METAL_DISABLE_V41_8K_CHUNK")) ? 4096u : DS41_PREFILL_CAP;
+    /* Diagnostic oracle: DS4_V41_PREFILL_LIMIT=1 prefills one token per sweep. */
+    const char *override = getenv("DS4_V41_PREFILL_LIMIT");
+    const unsigned long forced = override ? strtoul(override, NULL, 10) : 0ul;
+    if (forced && forced < limit) limit = (uint32_t)forced;
     return ctx < limit ? ctx : limit;
 }
 
@@ -41504,6 +41540,24 @@ static bool ds41_attention(ds41_gpu_graph *g, const ds4_model *m,
         !ds41_bf16(g->heads, heads * DS4_N_HEAD_DIM) ||
         !ds41_rope(g->heads, heads, DS4_N_HEAD_DIM, il, pos, true)) return false;
     if (projected) return true;
+    if (g->streaming && g->tp_world == 2 &&
+        getenv("DS4_CUDA_V41_TP_GATHER_ATTN") != NULL) {
+        /* Gather independently rounded low-rank groups before the final
+         * projection. Summing partial projections changes FP32 reduction
+         * order and can cross V4.1's following BF16 rounding boundaries. */
+        const uint64_t half_bytes = (uint64_t)(DS4_N_OUT_GROUP / 2u) *
+                                     DS4_N_LORA_O * sizeof(float);
+        const uint32_t slot = il * DS4_TP_GATES_PER_LAYER + DS4_TP_GATE_ATTN;
+        if (half_bytes > (uint64_t)DS4_N_EMBD * sizeof(float) ||
+            !ds41_attention_low(g, m, l) ||
+            !ds4_gpu_tensor_copy(g->tp_out[slot], 0, g->low, 0, half_bytes) ||
+            (g->tp_rank && !ds4_gpu_tensor_copy(g->low, half_bytes, g->low, 0, half_bytes)) ||
+            !ds4_gpu_tp_gate_encode(il, DS4_TP_GATE_ATTN) ||
+            !ds4_gpu_tensor_copy(g->low, g->tp_rank ? 0 : half_bytes,
+                                 g->tp_in[slot], 0, half_bytes)) return false;
+        return ds41_matmul(g->block, m, l->attn_output_b, g->low, false) &&
+               ds41_bf16(g->block, DS4_N_EMBD);
+    }
     return ds41_attention_output(g, m, l) &&
            ds41_sum_partial(g, g->block, il, DS4_TP_GATE_ATTN) &&
            ds41_bf16(g->block, DS4_N_EMBD);
@@ -41514,7 +41568,9 @@ static bool ds41_moe_partial(ds41_gpu_graph *g, const ds4_model *m,
     uint64_t gate_row = 0, down_row = 0;
     if (!tensor_nbytes(l->ffn_gate_exps->type, DS4_N_EMBD, &gate_row) ||
         !tensor_nbytes(l->ffn_down_exps->type, DS4_N_FF_EXP, &down_row)) return false;
-    const bool shared_owner = g->tp_world == 2 &&
+    const bool ordered_tp = g->streaming && g->tp_world == 2 &&
+        getenv("DS4_CUDA_V41_TP_ORDERED_SUM") != NULL;
+    const bool shared_owner = g->tp_world == 2 && !ordered_tp &&
         !getenv("DS4_METAL_DISABLE_V41_TP_SHARED_OWNER");
     ds4_gpu_tensor *routed = shared_owner ? g->block : g->routed;
     const ds4_tensor *bias = ds41_image_at(g, g->pos) ? l->ffn_exp_probs_vl : l->ffn_exp_probs_b;
@@ -41578,10 +41634,12 @@ static bool ds41_moe_partial(ds41_gpu_graph *g, const ds4_model *m,
 }
 
 static bool ds41_moe_finish(ds41_gpu_graph *g, uint32_t il) {
-    const bool shared_owner = g->tp_world == 2 &&
+    const bool ordered_tp = g->streaming && g->tp_world == 2 &&
+        getenv("DS4_CUDA_V41_TP_ORDERED_SUM") != NULL;
+    const bool shared_owner = g->tp_world == 2 && !ordered_tp &&
         !getenv("DS4_METAL_DISABLE_V41_TP_SHARED_OWNER");
     ds4_gpu_tensor *routed = shared_owner ? g->block : g->routed;
-    if (!ds41_sum_partial(g, routed, il, DS4_TP_GATE_FFN)) return false;
+    if (!ordered_tp && !ds41_sum_partial(g, routed, il, DS4_TP_GATE_FFN)) return false;
     return (shared_owner || ds4_gpu_add_tensor(g->block, routed, g->shared, DS4_N_EMBD)) &&
         ds41_bf16(g->block, DS4_N_EMBD);
 }
@@ -41628,8 +41686,23 @@ static bool ds41_graph_after_attention(ds41_gpu_graph *g, const ds4_model *m,
 
 static bool ds41_graph_before_moe(ds41_gpu_graph *g, const ds4_model *m,
                                  const ds4_layer_weights *l, uint32_t il) {
-    return ds41_graph_before_attention(g, m, l, il) && ds41_attention(g, m, l, il, false) &&
-        ds41_graph_after_attention(g, m, l);
+    if (!ds41_graph_before_attention(g, m, l, il)) return false;
+    metal_graph_debug_dump_tensor("v41_attn_norm", g->norm, DS4_N_EMBD, il, g->pos);
+    /* Diagnostic ablation: isolate expert ownership from the attention
+     * partition/reduction. Both ranks keep full attention buffers in the
+     * streaming graph; restore rank metadata before routing any experts. */
+    const uint32_t saved_world = g->tp_world, saved_rank = g->tp_rank;
+    const bool replicate_attention = g->streaming && saved_world == 2 &&
+        getenv("DS4_CUDA_V41_TP_REPLICATE_ATTN") != NULL;
+    if (replicate_attention) { g->tp_world = 1; g->tp_rank = 0; }
+    const bool attention_ok = ds41_attention(g, m, l, il, false);
+    g->tp_world = saved_world;
+    g->tp_rank = saved_rank;
+    if (!attention_ok) return false;
+    metal_graph_debug_dump_tensor("v41_attn_out", g->block, DS4_N_EMBD, il, g->pos);
+    if (!ds41_graph_after_attention(g, m, l)) return false;
+    metal_graph_debug_dump_tensor("v41_ffn_norm", g->norm, DS4_N_EMBD, il, g->pos);
+    return true;
 }
 
 static bool ds41_norm_batch(ds4_gpu_tensor *out, const ds4_gpu_tensor *in,
@@ -41772,6 +41845,10 @@ static bool ds41_index_batch(ds41_gpu_graph *g, const ds4_model *m,
                    count * DS4_N_INDEXER_HEAD, DS4_V41_FP4_E8M0) ||
                !ds41_project_rows(b->index_weights, m, l->indexer_proj, b->norm, count, true))
         return false;
+    ds41_debug_dump_batch_tensor("v41_index_q", b->index_q,
+        DS4_N_INDEXER_HEAD * DS4_N_INDEXER_HEAD_DIM, count, il, start);
+    ds41_debug_dump_batch_tensor("v41_index_weights", b->index_weights,
+        DS4_N_INDEXER_HEAD, count, il, start);
     ds41_gpu_graph row = *g;
     /* Only 32 score rows are live. Batched sorting retains the original
      * per-row causal width, including padding and tie order. */
@@ -41910,8 +41987,13 @@ static bool ds41_graph_after_moe(ds41_gpu_graph *g) {
 
 static bool ds41_graph_layer(ds41_gpu_graph *g, const ds4_model *m,
                             const ds4_layer_weights *l, uint32_t il, int token) {
-    return ds41_graph_before_moe(g, m, l, il) && ds41_moe(g, m, l, il, (uint32_t)token) &&
-        ds41_graph_after_moe(g);
+    if (!ds41_graph_before_moe(g, m, l, il) ||
+        !ds41_moe(g, m, l, il, (uint32_t)token)) return false;
+    metal_graph_debug_dump_tensor("v41_moe_out", g->block, DS4_N_EMBD, il, g->pos);
+    if (!ds41_graph_after_moe(g)) return false;
+    metal_graph_debug_dump_tensor("v41_residual", g->residual,
+                                  DS4_N_HC * DS4_N_EMBD, il, g->pos);
+    return true;
 }
 
 #if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD)
@@ -42618,6 +42700,12 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
             }
             if (ok && batch_hc)
                 ok = ds41_before_attention_batch(g, &active, m, &w->layer[il], il, count);
+            if (ok && batch_hc) {
+                ds41_debug_dump_batch_tensor("v41_hc_attn_flat", active.flat_norm,
+                                              DS4_N_HC * DS4_N_EMBD, count, il, start);
+                ds41_debug_dump_batch_tensor("v41_hc_attn_mix", active.mix, 24, count, il, start);
+                ds41_debug_dump_batch_tensor("v41_hc_attn_split", active.attn_split, 24, count, il, start);
+            }
             DS41_STAGE("hc/engram");
             for (uint32_t t = 0; ok && !batch_hc && t < count; t++) {
                 row.pos = start + t;
@@ -42630,9 +42718,32 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
             }
             if (ok && batch_attention) {
                 const ds4_layer_weights *l = &w->layer[il];
+                ds41_debug_dump_batch_tensor("v41_attn_norm", g->batch.norm,
+                                              DS4_N_EMBD, count, il, start);
                 ok = ds41_attention_project_batch(g, m, l, count);
+                if (ok) {
+                    ds41_debug_dump_batch_tensor("v41_qr", g->batch.qr, DS4_N_LORA_Q, count, il, start);
+                    ds41_debug_dump_batch_tensor("v41_q", g->batch.q,
+                        DS4_N_HEAD / g->tp_world * DS4_N_HEAD_DIM, count, il, start);
+                    ds41_debug_dump_batch_tensor("v41_kv", g->batch.kv, DS4_N_HEAD_DIM, count, il, start);
+                }
                 DS41_STAGE("attention projections");
                 if (ok && batch_core) ok = ds41_attention_batch(g, m, l, il, count);
+                if (ok && batch_core) {
+                    ds41_debug_dump_batch_tensor("v41_selected_comp", g->batch.selected_comp,
+                        DS4_N_INDEXER_TOP_K, count, il, start);
+                    ds41_debug_dump_batch_tensor("v41_heads", g->batch.heads,
+                        DS4_N_HEAD / g->tp_world * DS4_N_HEAD_DIM, count, il, start);
+                    const uint32_t ratio = ds4_layer_compress_ratio(il);
+                    if (ratio && ds41_kv_source(il)) {
+                        const uint32_t owner = il < 8 ? 0u : il < 14 ? 1u : il < 20 ? 2u : 3u;
+                        const uint32_t n_comp = (start + count) / ratio;
+                        ds41_debug_dump_cache("v41_cache_compressed", g->compressed[owner],
+                            (uint64_t)n_comp * DS4_N_HEAD_DIM, il, start, count);
+                        ds41_debug_dump_cache("v41_cache_index", g->index_cache[owner],
+                            (uint64_t)n_comp * DS4_N_INDEXER_HEAD_DIM, il, start, count);
+                    }
+                }
                 for (uint32_t t = 0; ok && !batch_core && t < count; t++) {
                     row.pos = start + t;
 #define DS41_USE_ATTN_ROW(name, width) row.name = g->rows_view[t].name;
@@ -42661,8 +42772,18 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
                     if (ok) ok = ds41_matmul_batch(g->batch.block, m, l->attn_output_b,
                                                    g->batch.low, count, true);
                 }
+                if (ok) ds41_debug_dump_batch_tensor("v41_attn_out", g->batch.block,
+                                                      DS4_N_EMBD, count, il, start);
                 DS41_STAGE("attention output");
                 if (ok && batch_hc) ok = ds41_after_attention_batch(&active, m, l, count);
+                if (ok && batch_hc) {
+                    ds41_debug_dump_batch_tensor("v41_hc_ffn_flat", active.flat_norm,
+                                                  DS4_N_HC * DS4_N_EMBD, count, il, start);
+                    ds41_debug_dump_batch_tensor("v41_hc_ffn_mix", active.mix, 24, count, il, start);
+                    ds41_debug_dump_batch_tensor("v41_hc_ffn_split", active.ffn_split, 24, count, il, start);
+                    ds41_debug_dump_batch_tensor("v41_hc_after_attn", active.after_attn,
+                                                  DS4_N_HC * DS4_N_EMBD, count, il, start);
+                }
                 DS41_STAGE("hc/ffn norm");
                 for (uint32_t t = 0; ok && !batch_hc && t < count; t++) {
                     row.pos = start + t;
@@ -42675,13 +42796,17 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
                 }
             }
             if (ok && batch_moe) {
+                ds41_debug_dump_batch_tensor("v41_ffn_norm", g->batch.norm,
+                                              DS4_N_EMBD, count, il, start);
                 ok = ds41_moe_batch(g, m, &w->layer[il], il, count, false);
                 DS41_STAGE("shared/routed ffn");
                 if (ok && batch_hc) {
                     ok = ds4_gpu_add_tensor(active.block, active.routed, active.shared, count * DS4_N_EMBD) &&
-                        ds4_gpu_dsv41_quantize(active.block, DS4_N_EMBD, count, DS4_V41_BF16) &&
-                        ds4_gpu_hc_expand_split_tensor(active.residual, active.block, active.after_attn,
-                            active.ffn_split, DS4_N_EMBD, DS4_N_HC) &&
+                        ds4_gpu_dsv41_quantize(active.block, DS4_N_EMBD, count, DS4_V41_BF16);
+                    if (ok) ds41_debug_dump_batch_tensor("v41_moe_out", g->batch.block,
+                                                          DS4_N_EMBD, count, il, start);
+                    if (ok) ok = ds4_gpu_hc_expand_split_tensor(active.residual, active.block, active.after_attn,
+                        active.ffn_split, DS4_N_EMBD, DS4_N_HC) &&
                         ds4_gpu_dsv41_quantize(active.residual, DS4_N_EMBD * DS4_N_HC, count, DS4_V41_BF16);
                 }
                 for (uint32_t t = 0; ok && !batch_hc && t < count; t++) {
@@ -42689,8 +42814,13 @@ static bool ds41_graph_prefill_sweep(ds41_gpu_graph *g, const ds4_model *m,
                     DS41_PREFILL_ROWS(DS41_USE_MOE_ROW)
 #undef DS41_USE_MOE_ROW
                     ok = ds4_gpu_add_tensor(row.block, row.routed, row.shared, DS4_N_EMBD) &&
-                        ds41_bf16(row.block, DS4_N_EMBD) && ds41_graph_after_moe(&row);
+                        ds41_bf16(row.block, DS4_N_EMBD);
+                    if (ok) ds41_debug_dump_batch_tensor("v41_moe_out", row.block,
+                                                          DS4_N_EMBD, 1, il, start + t);
+                    if (ok) ok = ds41_graph_after_moe(&row);
                 }
+                if (ok) ds41_debug_dump_batch_tensor("v41_residual", g->batch.residual,
+                                                      DS4_N_EMBD * DS4_N_HC, count, il, start);
             }
             DS41_STAGE("hc expand");
 #undef DS41_STAGE
@@ -71867,14 +71997,23 @@ static int ds4_engine_open_internal(ds4_engine **out,
         DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41 ||
         (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK4 &&
          DS4_MODEL_VARIANT == DS4_VARIANT_FLASH);
-    if (tp_shard && (!cuda_network_tp_model ||
+    /* Streaming TP uses the same ownership kernels without resident shards.
+     * Keep this extension scoped to the V4.1 Q2 path validated below. */
+    const bool cuda_streaming_tp = opt->tp.role != DS4_TP_NONE && e->ssd_streaming;
+    if (cuda_streaming_tp && DS4_MODEL_FAMILY != DS4_MODEL_FAMILY_DEEPSEEK41) {
+        fprintf(stderr, "ds4: streaming CUDA TP currently requires V4.1 Flash Q2\n");
+        ds4_engine_close(e);
+        *out = NULL;
+        return 1;
+    }
+    if ((tp_shard || cuda_streaming_tp) && (!cuda_network_tp_model ||
         (gpu_cfg && gpu_cfg->n_gpus > 1) || opt->quality)) {
         fprintf(stderr, "ds4: network CUDA TP requires V4/V4.1 Flash, one GPU per rank, no quality mode\n");
         ds4_engine_close(e);
         *out = NULL;
         return 1;
     }
-    if (tp_shard) {
+    if (tp_shard || cuda_streaming_tp) {
         for (uint32_t il = 0; il < DS4_N_LAYER; il++) {
             const ds4_layer_weights *layer = &e->weights.layer[il];
             const bool q2 = layer->ffn_gate_exps->type == DS4_TENSOR_IQ2_XXS &&
