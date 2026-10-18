@@ -41,11 +41,23 @@ prompt, then 128 teacher-forced decode tokens):
 
 | Prompt | Schedule | Prefill | Decode |
 |---|---|---:|---:|
-| 32k | 4096 rows + decoder suffix | 233 tok/s (about 140 s) | |
+| 16k | 4096 rows + decoder suffix, token-tiled attention output | 355 tok/s (about 46 s) | |
+| 32k | same | 396 tok/s | |
+| 32k | 4096 rows + decoder suffix | 233 tok/s (about 140 s), before tiling | |
 | 32k | 4096 rows, no suffix | 120 tok/s | |
 | 64k | 4096 rows + decoder suffix, 512 slots | 238 tok/s (about 275 s) | 12.86 tok/s |
 | 64k | same, 448 slots | 238 tok/s | 12.69 tok/s |
 | 64k | 2048 rows, no suffix, 512 slots | 111 tok/s (about 590 s) | 12.89 tok/s |
+
+Prefill gain from tiling: the exact Q8 attention-output kernels used to read
+every weight row once per token. They now keep a row's blocks in registers for
+a tile of 8 tokens, with unchanged per-token accumulation order, so the 16k
+(and 32k) frontier logits stay bit-identical to the untiled run (216 -> 355
+tok/s at 16k, 233 -> 396 at 32k). The kernel needs `__launch_bounds__(.., 2)`:
+under the build's 64-register cap it spills and runs slower than the old
+kernel. `DS4_CUDA_NO_Q8_TILED_ROWS=1` restores the old kernel. In the 16k stage
+profile shared/routed FFN is now about 51% of prefill, attention core 25%,
+attention output 17%.
 
 Decode at 64k is about 5% slower than at 8k (12.94 versus 13.55 tok/s in an
 earlier incremental sweep, which also gave 13.3 tok/s at 32k). Peak VRAM sampled
@@ -160,3 +172,17 @@ Expect about 238 prefill tokens/s and 12.7 decode tokens/s. Compare
 `out/frontier_065536.logits.json` between builds with the same flags (identical
 is expected); against a different schedule, expect the KL values above, not
 equality.
+
+## Decode experiments that did not help
+
+- **Router look-ahead prefetch.** Running the next layer's router on this
+  layer's FFN input predicts 61% of the next layer's experts, and staging them
+  on a worker thread raised the expert-cache hit rate from 43% to 79% with
+  identical output (400 tokens, all logprobs equal). Decode still got slower
+  (14.2 -> 12.8 tok/s): the prediction costs 3% by itself, and the concurrent
+  copies slow the main thread further although it never waits for them. Not
+  kept.
+- **Direct mmap upload for small prefill batches** (`rows` 1 versus 8): no
+  measurable change in upload bandwidth or speed. Not kept.
+- `DS4_CUDA_SSD_EXPERT_TRACE=path` records every cache lookup (layer, unique
+  experts, misses, ids) for offline cache-policy replay.

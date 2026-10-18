@@ -7235,14 +7235,24 @@ __global__ static void grouped_q8_0_a_preq_warp8_tok2_kernel(
  * block order. */
 #define CUDA_GROUPED_Q8_SHORT_WARPS 4u
 
+/* The build caps registers at 64 for every kernel, which makes the 8-token tile
+ * spill and run slower than one token per warp. Two resident blocks per SM
+ * leave it 128 registers: no spills, ~5x faster than the per-token kernel. */
 template <unsigned Rows>
-__global__ static void grouped_q8_0_a_preq_rows_kernel(
+__global__ static void __launch_bounds__(32u * CUDA_GROUPED_Q8_SHORT_WARPS, 2)
+grouped_q8_0_a_preq_rows_kernel(
         float *low, const unsigned char *w, const int8_t *xq,
         const float *xscale, uint64_t rank, uint32_t groups,
-        uint32_t n_tokens, uint64_t blocks, uint64_t weight_blocks) {
+        uint32_t total_tokens, uint64_t blocks, uint64_t weight_blocks) {
     const uint64_t row = (uint64_t)blockIdx.x * CUDA_GROUPED_Q8_SHORT_WARPS + (threadIdx.x >> 5u);
     const uint32_t lane = threadIdx.x & 31u;
     const uint64_t low_dim = (uint64_t)groups * rank;
+    /* grid.y walks token tiles of Rows; one tile (y = 0) is the short-row case. */
+    const uint64_t first = (uint64_t)blockIdx.y * Rows;
+    const uint32_t n_tokens = (uint32_t)(total_tokens - first < Rows ? total_tokens - first : Rows);
+    xq += first * groups * blocks * 32u;
+    xscale += first * groups * blocks;
+    low += first * low_dim;
     if (row >= low_dim) return;
     const uint64_t group = row / rank;
     const unsigned char *wr = w + row * weight_blocks * 34u;
@@ -7305,6 +7315,26 @@ static void cuda_grouped_q8_short_launch(
         grouped_q8_0_a_preq_rows_kernel<6><<<grid, 32u * warps, 0, cuda_decode_stream()>>>(
             low, w, xq, scale, rank, groups, rows, blocks, weight_blocks);
     }
+}
+
+/* Prefill batches: each warp keeps one weight row's blocks in registers for a
+ * tile of 8 tokens, so the weights are read once per tile instead of once per
+ * token. Per-token float accumulation order is unchanged (same block order and
+ * warp reduction as grouped_q8_0_a_preq_warp8_kernel), so results are
+ * bit-identical. Needs in_dim % 32 == 0 and 16-byte aligned activations. */
+static void cuda_grouped_q8_tiled_launch(
+        float *low, const unsigned char *w, const int8_t *xq,
+        const float *scale, uint64_t rank, uint32_t groups,
+        uint32_t rows, uint64_t blocks) {
+    const unsigned warps = CUDA_GROUPED_Q8_SHORT_WARPS;
+    dim3 grid(((unsigned)((uint64_t)groups * rank) + warps - 1u) / warps, (rows + 7u) / 8u, 1u);
+    grouped_q8_0_a_preq_rows_kernel<8><<<grid, 32u * warps, 0, cuda_decode_stream()>>>(
+        low, w, xq, scale, rank, groups, rows, blocks, blocks);
+}
+
+static bool cuda_q8_tiled_rows_enabled(void) {
+    static const bool on = getenv("DS4_CUDA_NO_Q8_TILED_ROWS") == NULL;
+    return on;
 }
 
 __global__ static void rms_norm_plain_kernel(float *out, const float *x, uint32_t n, uint32_t rows, float eps) {
@@ -17411,6 +17441,15 @@ extern "C" int ds4_gpu_matmul_q8_0_decode_rows_exact_tensor(
         (float *)out->ptr, (const unsigned char *)wptr, xq, xscale,
         in_dim, out_dim, n_rows, blocks, blocks, out_dim, 32u);
     if (mma_rc) return mma_rc > 0;
+    if (n_rows >= 8u && cuda_q8_use_dp4a() && in_dim % 32u == 0u &&
+        cuda_decode_stream() == (cudaStream_t)0 &&
+        ((uintptr_t)xq & 15u) == 0u && cuda_q8_tiled_rows_enabled()) {
+        /* One group of out_dim rows: the grouped kernel's layout with groups = 1. */
+        cuda_grouped_q8_tiled_launch((float *)out->ptr,
+            reinterpret_cast<const unsigned char *>(wptr), xq, xscale,
+            out_dim, 1u, n_rows, blocks);
+        return cuda_ok(cudaGetLastError(), "q8_0 decode rows exact tiled launch");
+    }
     dim3 grid(((unsigned)out_dim + 7u) / 8u, n_rows, 1u);
     matmul_q8_0_preq_warp8_kernel<<<grid, 256>>>(
             (float *)out->ptr,
@@ -20722,6 +20761,12 @@ extern "C" int ds4_gpu_attention_output_low_q8_rows_exact_tensor(
             (uint64_t)group_cnt * blocks_a, low_dim, 32u, group_cnt);
         if (rc < 0) return 0;
         if (rc) return 1;
+    }
+    if (n_rows >= 8u && use_dp4a && group_dim % 32u == 0u &&
+        ((uintptr_t)xq & 15u) == 0u && cuda_q8_tiled_rows_enabled()) {
+        cuda_grouped_q8_tiled_launch((float *)low->ptr, out_a, xq, xscale,
+                                     rank, group_cnt, n_rows, blocks_a);
+        return cuda_ok(cudaGetLastError(), "attention_output_low_q8 tiled rows");
     }
     dim3 grid_a(((unsigned)low_dim + 7u) / 8u, n_rows, 1u);
     grouped_q8_0_a_preq_warp8_kernel<<<grid_a, 256, 0, cuda_decode_stream()>>>((float *)low->ptr,
@@ -29109,6 +29154,18 @@ struct cuda_stream_upload_batch {
     ~cuda_stream_upload_batch() { (void)finish(); }
 };
 
+/* DS4_CUDA_SSD_EXPERT_TRACE=path: append one record per cache lookup, for
+ * replaying expert-cache policies offline. Layout (little endian):
+ * u8 phase (1 scalar decode, 0 batched prefill), u8 layer, u16 unique experts,
+ * u16 misses, u16 zero, u32 requested slots, then the unique expert ids as i32. */
+static FILE *cuda_stream_trace_file(void) {
+    static FILE *file = [] {
+        const char *path = getenv("DS4_CUDA_SSD_EXPERT_TRACE");
+        return path && path[0] ? fopen(path, "wb") : (FILE *)NULL;
+    }();
+    return file;
+}
+
 /* DS4_CUDA_SSD_STREAM_STATS: diagnostic totals for the selected-expert cache,
  * printed at exit. Splits load time into the wait for queued GPU work and the
  * host staging/upload of misses. */
@@ -29269,8 +29326,10 @@ static int cuda_stream_selected_cache_begin_load(
             if (stats) counters.hits++;
         }
         cuda_stream_upload_batch uploads;
+        uint16_t missed = 0;
         for (size_t i = 0; i < unique.size(); i++) {
             if (slots[i] >= 0) continue;
+            missed++;
             uint32_t victim = UINT32_MAX;
             uint64_t oldest = stamp;
             for (uint32_t j = 0; j < g_stream_expert_slots.size(); j++) {
@@ -29310,6 +29369,17 @@ static int cuda_stream_selected_cache_begin_load(
         }
         if (!uploads.finish()) return 0;
         if (stats) counters.upload_sec += cuda_wall_sec() - t_upload;
+        if (FILE *trace = cuda_stream_trace_file()) {
+            const uint8_t head[4] = {(uint8_t)(allow_pageable_dma ? 1 : 0), (uint8_t)table->layer,
+                                     (uint8_t)(unique.size() & 255u), (uint8_t)(unique.size() >> 8)};
+            const uint16_t tail[2] = {missed, 0};
+            const uint32_t requested = slot_count;
+            fwrite(head, 1, sizeof(head), trace);
+            fwrite(tail, sizeof(tail[0]), 2, trace);
+            fwrite(&requested, sizeof(requested), 1, trace);
+            fwrite(unique.data(), sizeof(unique[0]), unique.size(), trace);
+            fflush(trace);
+        }
         g_stream_prefill_ids = remap;
         g_stream_prefill_slots = slots;
         for (auto &id : remap) if (id >= 0) id = slots[id];
