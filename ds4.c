@@ -41633,6 +41633,48 @@ static bool ds41_moe_partial(ds41_gpu_graph *g, const ds4_model *m,
     return true;
 }
 
+#if !defined(__APPLE__) && !defined(DS4_ROCM_BUILD)
+/* One-rank streaming decode, in capturable pieces: ds41_moe_partial split at
+ * the expert-cache lookup, which reads the router's choice back on the host. */
+static bool ds41_stream_route(ds41_gpu_graph *g, const ds4_model *m,
+                              const ds4_layer_weights *l) {
+    if (!l->ffn_exp_probs_b) return false;
+    return ds41_matmul(g->route_logits, m, l->ffn_gate_inp, g->norm, false) &&
+        ds4_gpu_router_select_tensor(g->selected, g->route_weights, g->route_probs,
+            m->map, m->size, l->ffn_exp_probs_b->abs_offset, 0, 0, 0,
+            DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_EXPERT_WEIGHT_SCALE, 0, 0, true, false,
+            g->route_logits) &&
+        ds41_matmul(g->shared_gate, m, l->ffn_gate_shexp, g->norm, true) &&
+        ds41_matmul(g->shared_up, m, l->ffn_up_shexp, g->norm, true) &&
+        ds4_gpu_swiglu_tensor(g->shared_mid, g->shared_gate, g->shared_up,
+                              DS4_N_FF_EXP, DS4_SWIGLU_CLAMP_EXP, 1.0f) &&
+        ds41_bf16(g->shared_mid, DS4_N_FF_EXP) &&
+        ds41_matmul(g->shared, m, l->ffn_down_shexp, g->shared_mid, true);
+}
+
+static bool ds41_stream_routed(ds41_gpu_graph *g, const ds4_model *m,
+                               const ds4_layer_weights *l, uint32_t il) {
+    uint64_t gate_row = 0, down_row = 0;
+    if (!tensor_nbytes(l->ffn_gate_exps->type, DS4_N_EMBD, &gate_row) ||
+        !tensor_nbytes(l->ffn_down_exps->type, DS4_N_FF_EXP, &down_row)) return false;
+    if (g->tp_world == 2)
+        return ds4_gpu_routed_moe_batch_owned_tensor(g->routed, g->gate, g->up, g->mid, g->experts,
+            m->map, m->size, l->ffn_gate_exps->abs_offset, l->ffn_up_exps->abs_offset,
+            l->ffn_down_exps->abs_offset, l->ffn_gate_exps->type, l->ffn_down_exps->type,
+            gate_row * DS4_N_FF_EXP, gate_row, down_row * DS4_N_EMBD, down_row,
+            DS4_N_EMBD, DS4_N_FF_EXP, DS4_N_EMBD, g->selected, g->route_weights,
+            DS4_N_EXPERT, DS4_N_EXPERT_USED, g->tp_rank * (DS4_N_EXPERT / 2u),
+            DS4_N_EXPERT / 2u, DS4_SWIGLU_CLAMP_EXP, g->norm, il, 1, NULL);
+    return ds4_gpu_routed_moe_one_tensor(g->routed, g->gate, g->up, g->mid, g->experts,
+            m->map, m->size, l->ffn_gate_exps->abs_offset, l->ffn_up_exps->abs_offset,
+            l->ffn_down_exps->abs_offset, l->ffn_gate_exps->type, l->ffn_down_exps->type,
+            gate_row * DS4_N_FF_EXP, gate_row, down_row * DS4_N_EMBD, down_row,
+            DS4_N_EMBD, DS4_N_FF_EXP, DS4_N_EMBD, g->selected, g->route_weights,
+            DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_SWIGLU_CLAMP_EXP, g->norm, NULL, il,
+            false);
+}
+#endif
+
 static bool ds41_moe_finish(ds41_gpu_graph *g, uint32_t il) {
     const bool ordered_tp = g->streaming && g->tp_world == 2 &&
         getenv("DS4_CUDA_V41_TP_ORDERED_SUM") != NULL;
@@ -42013,6 +42055,9 @@ static bool ds41_decode_island(ds41_gpu_graph *g, const ds4_model *m,
         const bool ok = island == 0 ?
             ds41_graph_before_attention(g, m, l, il) && ds41_attention_project(g, m, l) :
             island == 2 ? ds41_attention_output(g, m, l) :
+            island == 3 ? ds41_bf16(g->block, DS4_N_EMBD) &&
+                ds41_graph_after_attention(g, m, l) && ds41_stream_route(g, m, l) :
+            island == 4 ? ds41_moe_finish(g, il) && ds41_graph_after_moe(g) :
             ds41_graph_after_attention(g, m, l) && ds41_moe_partial(g, m, l, il, 0);
         if (state != 0) return ok;
         if (!ok) ds4_gpu_decode_graph_abort(&key);
@@ -42023,6 +42068,28 @@ static bool ds41_decode_island(ds41_gpu_graph *g, const ds4_model *m,
 
 static bool ds41_graph_decode_layer(ds41_gpu_graph *g, const ds4_model *m,
                                     const ds4_layer_weights *l, uint32_t il, int token) {
+    /* One-rank streaming: replay the dense pieces as graphs; the position
+     * dependent attention and the expert-cache lookup stay eager. Results are
+     * the captured kernels' own, so they match the eager path bit for bit. */
+    static int stream_graphs = -1;
+    if (stream_graphs < 0) stream_graphs = getenv("DS4_V41_STREAM_GRAPHS") != NULL;
+    /* Two ranks only in the exact mode: attention replicated, expert sum ordered. */
+    const bool exact_tp = g->tp_world == 2 && getenv("DS4_CUDA_V41_TP_ORDERED_SUM") != NULL &&
+        getenv("DS4_CUDA_V41_TP_REPLICATE_ATTN") != NULL &&
+        !getenv("DS4_CUDA_V41_TP_GATHER_ATTN");
+    if (stream_graphs && g->streaming && (g->tp_world == 1 || exact_tp) && !g->quality &&
+        !g->imatrix && !g->image_count && !metal_graph_debug_get_config()->prefix &&
+        !g_expert_profile.active && !getenv("DS4_CUDA_MOE_PROFILE") &&
+        ds4_gpu_decode_graphs_supported()) {
+        const uint32_t saved_world = g->tp_world, saved_rank = g->tp_rank;
+        if (exact_tp) { g->tp_world = 1; g->tp_rank = 0; }
+        const bool dense = ds41_decode_island(g, m, l, il, 0) &&
+            ds41_attention(g, m, l, il, true) && ds41_decode_island(g, m, l, il, 2);
+        g->tp_world = saved_world;
+        g->tp_rank = saved_rank;
+        return dense && ds41_decode_island(g, m, l, il, 3) &&
+            ds41_stream_routed(g, m, l, il) && ds41_decode_island(g, m, l, il, 4);
+    }
     if (g->tp_world != 2 || g->streaming || g->quality || g->imatrix ||
         g->image_count || getenv("DS4_METAL_DISABLE_V41_TP_SHARED_OWNER") ||
         g_expert_profile.active || getenv("DS4_CUDA_MOE_PROFILE") ||
