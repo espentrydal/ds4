@@ -33,6 +33,9 @@ Model layout. Host port and tailnet port share the last two digits; the leading
   values: ai-smil1 8601,8602; ai-smil2 8801.
 - The tailnet front door is the three forward ports only: funnel and the
   `tailscale serve` proxy are removed (`tailscale serve status` = no config).
+- Stable V4 (`~/ds4`, `ds4-server.service`) is out of this scheme and keeps port
+  8080. Slot 03 belongs to V4.1 Flash only. Launcher script copies for both
+  nodes live in `scripts/hosts/` with `scripts/hosts/README.md`.
 - Stable V4 in `~/ds4` on both nodes is untouched.
 - pi: provider `smil` in `~/.pi/agent/models.json` (chezmoi, gated by
   `smil_models`) exposes the three models at `http://100.85.194.1:1008N/v1` and

@@ -22,9 +22,12 @@ development, one-off overrides, and customized launches.
 - HC/FFN/shared scratch: `DS4_CUDA_LOCAL_HC_FFN_SCRATCH=1`
 - Decode-speed override: `DS4_METAL_DISABLE_SHARED_DOWN_HC_FUSION=1`
 
-The DS4 context default is intentionally 128K. DS4 decode speed is sensitive to
-VRAM pressure because larger context buffers compete with CUDA-side caches. Use
-262K only when the task needs it:
+The DS4 context default is intentionally 128K. This is the stable V4
+deployment and keeps port `8080`; the V4.1 Flash fleet uses the slot scheme,
+host `8801` / tailnet `10083` (`scripts/server-ds41-flash-v100-ep.sh`).
+
+DS4 decode speed is sensitive to VRAM pressure because larger context buffers
+compete with CUDA-side caches. Use 262K only when the task needs it:
 
 ```bash
 DS4_CTX=262144 systemctl --user restart ds4-server.service
@@ -77,12 +80,17 @@ inherits these settings on restart.
 ### Qwen
 
 - Node: `ai-smil1`
-- Primary service: `qwen-gpu01.service`
-- Optional second service: `qwen-gpu23.service`
-- Script: `~/scripts/server-qwen-gpu01.sh`
-- Primary port: `8080`
-- Optional second port: `8081`
+- Primary service: `qwen-gpu01.service` (GPUs 0,1), Qwen3.8-27B Q6_K_XL, MTP
+- Optional second service: `qwen-gpu23.service` (GPUs 2,3), Qwen3.6-35B-A3B Q8
+- Scripts: `~/scripts/server-qwen-gpu01.sh`, `~/scripts/server-qwen-gpu23.sh`
+  (sources of truth in this repo: `scripts/hosts/ai-smil1-qwen-*.sh`)
+- Node ports: `8601`, `8602`; tailnet ports on forsker-pc: `10081`, `10082`
 - Context: `262144`
+
+The port number carries the slot: `86NN` on ai-smil1, `88NN` on ai-smil2, and
+`100NN` on the tailnet, where `NN` is the service number (`81`-`89` are model
+slots; `80` and `88` stay free). Qwen 3.8 has no 35B-A3B variant, so the second
+slot stays on 3.6.
 
 Qwen uses 256K context by default because it has enough speed headroom for
 convenience. The older comments that called this "1M ctx" were stale; the actual
