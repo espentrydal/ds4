@@ -4,15 +4,33 @@ State as of 2026-10-19. Details: `docs/ppc64le-v41-flash-streaming.md`.
 
 ## Running
 
+Model layout. Host port and tailnet port share the last two digits; the leading
+`86`/`88` is the node (ai-smil1 is .86, ai-smil2 is .88) and `100` is the tailnet.
+`NN=80` and `NN=88` are left free for a possible web service.
+
+| Slot | Model | Node, GPUs | Host port | Tailnet port |
+|---|---|---|---|---|
+| 01 | Qwen3.8-27B Q6_K_XL, 256k, MTP | ai-smil1 0,1 | 8601 | 10081 |
+| 02 | Qwen3.6-35B-A3B Q8, 256k | ai-smil1 2,3 | 8602 | 10082 |
+| 03 | DeepSeek V4.1 Flash, 64k, expert-parallel | ai-smil2 0-3 | 8801 | 10083 |
+
+- ai-smil1: `qwen-gpu01.service` (Qwen3.8-27B, slot 01) is running;
+  `qwen-gpu23.service` (Qwen3.6-35B-A3B, slot 02) is defined and stopped. Both
+  unit files are `static` (no `[Install]`), so they start on demand only.
 - ai-smil2: `ds41-ep.service` (systemd user unit, started, not enabled at boot).
-  Port 8082, 64k context, all four GPUs, expert-parallel decode.
   Script `scripts/server-ds41-flash-v100-ep.sh`, KV snapshots in `~/ds4.1-kv`.
-- Stop it before using GPUs for anything else: `systemctl --user stop ds41-ep`.
-  The unit conflicts with `ds4-server.service` and `qwen-gpu01.service`.
-- Logs: `journalctl -b -f _SYSTEMD_USER_UNIT=ds41-ep.service`. First start prefaults the 341 GiB
-  model into RAM (several minutes before the port opens).
-- Stable V4 in `~/ds4` on both nodes is untouched. ai-smil1 is idle.
-- Enable at boot (not done): `systemctl --user enable ds41-ep`.
+  Stop it before using the GPUs for anything else: `systemctl --user stop ds41-ep`.
+  It conflicts with `ds4-server.service` and `qwen-gpu01.service` on that node.
+- Logs: `journalctl -b -f _SYSTEMD_USER_UNIT=ds41-ep.service`. First start
+  prefaults the 341 GiB model into RAM (several minutes before the port opens).
+- forsker-pc forwards the tailnet ports with `ssh-forward@1008{1,2,3}`, using the
+  dedicated passphrase-free key `~/.local/state/smil-forward/id_ed25519` whose
+  public key is restricted on the smil hosts to port-forwarding.
+- Stable V4 in `~/ds4` on both nodes is untouched.
+- pi: provider `smil` in `~/.pi/agent/models.json` (chezmoi, gated by
+  `smil_models`) exposes the three models at `http://100.85.194.1:1008N/v1` and
+  they are in `enabledModels`. None is the default, so pi works unchanged off the
+  tailnet or with the models down.
 
 ## Numbers (graphs + expert-parallel, 3 helper GPUs, 1800 slots each)
 
