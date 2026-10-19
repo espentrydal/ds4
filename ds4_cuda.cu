@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <thread>
@@ -28457,6 +28458,12 @@ static void ep_free(ds4_gpu_tensor *t) {
 static void ep_helper_run(ep_helper *h) {
     const ep_job &j = h->job;
     const uint64_t pairs = j.n_expert;
+    static const long fail_job = getenv("DS4_V41_EP_TEST_FAIL_JOB") ?
+        atol(getenv("DS4_V41_EP_TEST_FAIL_JOB")) : -1;
+    if (fail_job >= 0 && h->dev == g_ep.helpers[0]->dev && (long)h->jobs == fail_job) {
+        h->fail = 1;
+        return;
+    }
     if (h->x_cap < (uint64_t)j.in_dim * 4u || h->gate_cap < pairs * j.mid_dim * 4u ||
         h->down_cap < pairs * j.out_dim * 4u) {
         ep_free(&h->x); ep_free(&h->sel); ep_free(&h->w); ep_free(&h->gate);
@@ -28516,9 +28523,11 @@ static void ep_helper_main(ep_helper *h) {
             if (++spins > 200000) {
                 std::unique_lock<std::mutex> guard(h->lock);
                 h->sleeping.store(true);
-                h->wake.wait(guard, [&] {
-                    return h->posted.load(std::memory_order_acquire) != seen || g_ep.quit;
-                });
+                /* Store->load order against the leader's posted->sleeping
+                 * check: without a full fence a wakeup can be missed on POWER. */
+                std::atomic_thread_fence(std::memory_order_seq_cst);
+                while (h->posted.load(std::memory_order_acquire) == seen && !g_ep.quit)
+                    h->wake.wait_for(guard, std::chrono::milliseconds(2));
                 h->sleeping.store(false);
             }
         }
@@ -28605,7 +28614,7 @@ __global__ static void moe_sum_ep_kernel(
     out[row] = sum;
 }
 
-extern "C" int ds4_gpu_ep_routed_moe(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size,
+static int ep_routed_moe_impl(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size,
         uint64_t gate_offset, uint64_t up_offset, uint64_t down_offset,
         uint32_t gate_type, uint32_t down_type,
         uint64_t gate_expert_bytes, uint64_t gate_row_bytes,
@@ -28614,8 +28623,6 @@ extern "C" int ds4_gpu_ep_routed_moe(ds4_gpu_tensor *out, const void *model_map,
         const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights,
         uint32_t n_total_expert, uint32_t n_expert, float clamp,
         const ds4_gpu_tensor *x, uint32_t layer_index) {
-    if (!g_ep.active || n_expert != 6u || g_ep.helpers.size() > 4u ||
-        gate_type != 16u || down_type != 10u || n_total_expert != 384u) return 0;
     const uint64_t need = 6ull * out_dim * 4u;
     if (g_ep.gather_bytes < need) {
         for (auto &p : g_ep.gather) { if (p) (void)cudaFree(p); p = NULL; }
@@ -28633,6 +28640,7 @@ extern "C" int ds4_gpu_ep_routed_moe(ds4_gpu_tensor *out, const void *model_map,
              expert_in_dim, expert_mid_dim, out_dim, n_total_expert, n_expert, layer_index, clamp,
              x->ptr, selected->ptr, weights->ptr, g_ep.gather[i]};
         h->posted.store(h->done.load() + 1, std::memory_order_seq_cst);
+        std::atomic_thread_fence(std::memory_order_seq_cst);
         if (h->sleeping.load()) {
             { std::lock_guard<std::mutex> guard(h->lock); }
             h->wake.notify_one();
@@ -28653,6 +28661,31 @@ extern "C" int ds4_gpu_ep_routed_moe(ds4_gpu_tensor *out, const void *model_map,
         (float *)out->ptr, r[0], r[1], r[2], r[3], (const int32_t *)selected->ptr, out_dim,
         384u / (uint32_t)g_ep.helpers.size());
     return cuda_ok(cudaGetLastError(), "expert-parallel sum");
+}
+
+/* Returns 1 when the helpers computed the layer. On 0 the caller runs the
+ * single-GPU path for this layer; if the helpers failed, expert-parallel is
+ * switched off for the rest of the process (the leader keeps its own cache). */
+extern "C" int ds4_gpu_ep_routed_moe(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size,
+        uint64_t gate_offset, uint64_t up_offset, uint64_t down_offset,
+        uint32_t gate_type, uint32_t down_type,
+        uint64_t gate_expert_bytes, uint64_t gate_row_bytes,
+        uint64_t down_expert_bytes, uint64_t down_row_bytes,
+        uint32_t expert_in_dim, uint32_t expert_mid_dim, uint32_t out_dim,
+        const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights,
+        uint32_t n_total_expert, uint32_t n_expert, float clamp,
+        const ds4_gpu_tensor *x, uint32_t layer_index) {
+    if (!g_ep.active) return 0;
+    if (n_expert != 6u || g_ep.helpers.size() > 4u ||
+        gate_type != 16u || down_type != 10u || n_total_expert != 384u) return 0;
+    if (ep_routed_moe_impl(out, model_map, model_size, gate_offset, up_offset, down_offset,
+            gate_type, down_type, gate_expert_bytes, gate_row_bytes, down_expert_bytes,
+            down_row_bytes, expert_in_dim, expert_mid_dim, out_dim, selected, weights,
+            n_total_expert, n_expert, clamp, x, layer_index)) return 1;
+    fprintf(stderr, "ds4: expert-parallel decode failed at layer %u; continuing on one GPU\n",
+            layer_index);
+    g_ep.active = false;
+    return 0;
 }
 
 extern "C" int ds4_gpu_hc_split_sinkhorn_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *mix, const void *model_map, uint64_t model_size, uint64_t scale_offset, uint64_t base_offset, uint32_t n_hc, uint32_t sinkhorn_iters, float eps) {
