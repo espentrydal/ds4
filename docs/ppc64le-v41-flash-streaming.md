@@ -214,7 +214,7 @@ With graphs on, the shared expert (gate, up, SwiGLU, down) is its own graph isla
 replayed on a second stream, so it overlaps the routed-expert uploads. One GPU,
 448 slots, 400 tokens: eager 14.23, graphs 14.90, graphs with side stream 15.76
 tokens/s; logprobs identical to eager. `DS4_V41_NO_SHARED_SIDE=1` turns it off.
-Not yet checked in two-rank TP mode.
+Two-rank TP with graphs and the side stream is also identical to eager (300 steps, 8k).
 
 ### Expert-parallel decode on helper GPUs
 
@@ -235,9 +235,14 @@ Each helper has its own host link, so upload traffic is split across them.
 | 64k | 404 | 19.6 | 20.9 |
 
 Hit rate on the helpers is 87-89% (448-slot single GPU: 43%). Logprobs are
-bit-identical to the single-GPU eager path at 8k (400 steps) and at 32k (128
-steps). 64k exactness is not yet compared. Failure of a helper aborts the token
-(no fallback yet). Uses all four GPUs of the node for one request.
+bit-identical to the single-GPU eager path at 8k (400 steps), 32k and 64k (128
+steps each). If a helper fails, the layer and the rest of the run continue on the
+leader GPU with identical output (`DS4_V41_EP_TEST_FAIL_JOB=N` injects a failure
+on the first helper's N-th job; tested at 8k and 64k). The helper wakeup uses a
+full memory fence plus a timed wait: without the fence POWER can miss a wakeup,
+which hung 2 of 9 early runs; 8 repeated runs afterwards (4 with injected
+failures) all finished with identical logprobs. Uses all four GPUs of the node
+for one request.
 
 ## Decode experiments that did not help
 

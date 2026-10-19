@@ -41679,13 +41679,14 @@ static bool ds41_stream_routed(ds41_gpu_graph *g, const ds4_model *m,
             ds4_gpu_ep_init(gpus, slots ? (uint32_t)atoi(slots) : 1800u,
                             reserve ? (uint32_t)atoi(reserve) : 2048u);
     }
-    if (ep)
-        return ds4_gpu_ep_routed_moe(g->routed, m->map, m->size, l->ffn_gate_exps->abs_offset,
+    if (ep && ds4_gpu_ep_active() &&
+        ds4_gpu_ep_routed_moe(g->routed, m->map, m->size, l->ffn_gate_exps->abs_offset,
             l->ffn_up_exps->abs_offset, l->ffn_down_exps->abs_offset,
             l->ffn_gate_exps->type, l->ffn_down_exps->type,
             gate_row * DS4_N_FF_EXP, gate_row, down_row * DS4_N_EMBD, down_row,
             DS4_N_EMBD, DS4_N_FF_EXP, DS4_N_EMBD, g->selected, g->route_weights,
-            DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_SWIGLU_CLAMP_EXP, g->norm, il) != 0;
+            DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_SWIGLU_CLAMP_EXP, g->norm, il))
+        return true;
     return ds4_gpu_routed_moe_one_tensor(g->routed, g->gate, g->up, g->mid, g->experts,
             m->map, m->size, l->ffn_gate_exps->abs_offset, l->ffn_up_exps->abs_offset,
             l->ffn_down_exps->abs_offset, l->ffn_gate_exps->type, l->ffn_down_exps->type,
