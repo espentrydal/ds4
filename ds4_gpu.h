@@ -415,6 +415,18 @@ int ds4_gpu_stream_expert_cache_prefetch(
         const ds4_gpu_stream_expert_table *current,
         const ds4_gpu_stream_expert_table *next);
 void ds4_gpu_stream_expert_cache_prefetch_finish(bool cancel);
+/* Expert-parallel one-token decode on helper GPUs (CUDA, streaming). */
+int ds4_gpu_ep_init(const char *gpus, uint32_t slots, uint32_t reserve_mb);
+int ds4_gpu_ep_active(void);
+int ds4_gpu_ep_routed_moe(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size,
+        uint64_t gate_offset, uint64_t up_offset, uint64_t down_offset,
+        uint32_t gate_type, uint32_t down_type,
+        uint64_t gate_expert_bytes, uint64_t gate_row_bytes,
+        uint64_t down_expert_bytes, uint64_t down_row_bytes,
+        uint32_t expert_in_dim, uint32_t expert_mid_dim, uint32_t out_dim,
+        const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights,
+        uint32_t n_total_expert, uint32_t n_expert, float clamp,
+        const ds4_gpu_tensor *x, uint32_t layer_index);
 #endif
 /* Reset only the prompt-local eviction heuristic.  The resident SSD expert
  * cache itself is intentionally kept warm across sessions. */

@@ -208,6 +208,37 @@ during the first long prefill. Keep explicit slot counts that leave that room:
 448 at 64k (tested), probably 600-700 at 8k-16k (not yet tested with full
 prompts).
 
+### Shared expert on a side stream
+
+With graphs on, the shared expert (gate, up, SwiGLU, down) is its own graph island
+replayed on a second stream, so it overlaps the routed-expert uploads. One GPU,
+448 slots, 400 tokens: eager 14.23, graphs 14.90, graphs with side stream 15.76
+tokens/s; logprobs identical to eager. `DS4_V41_NO_SHARED_SIDE=1` turns it off.
+Not yet checked in two-rank TP mode.
+
+### Expert-parallel decode on helper GPUs
+
+`DS4_V41_EP_GPUS=1,2,3` (with `DS4_V41_STREAM_GRAPHS=1`, one rank) runs the
+one-token routed experts on helper GPUs. The helpers hold no dense weights and no
+KV, so each keeps a large private expert cache (`DS4_V41_EP_SLOTS`, default 1800
+slots, 16.7 GiB; `DS4_V41_EP_RESERVE_MB`, default 2048). Helper `i` of `n` owns the
+contiguous experts `[i*384/n, (i+1)*384/n)` of every layer, runs them with the same
+kernels as the single-GPU path, and copies the six per-slot rows back; the leader
+sums the six slots in slot order, so the result is the single-GPU result. The
+helper count must divide 384. Prefill and everything else stay on the leader.
+Each helper has its own host link, so upload traffic is split across them.
+
+| Context | Prefill | Decode, 512 tokens | Decode, steady |
+|---|---:|---:|---:|
+| 8k (400 tokens, small prompt) | | 21.4 | |
+| 32k | 396 | 20.6 | 22.0 |
+| 64k | 404 | 19.6 | 20.9 |
+
+Hit rate on the helpers is 87-89% (448-slot single GPU: 43%). Logprobs are
+bit-identical to the single-GPU eager path at 8k (400 steps) and at 32k (128
+steps). 64k exactness is not yet compared. Failure of a helper aborts the token
+(no fallback yet). Uses all four GPUs of the node for one request.
+
 ## Decode experiments that did not help
 
 - **Router look-ahead prefetch.** Running the next layer's router on this
