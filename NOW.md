@@ -23,9 +23,16 @@ Model layout. Host port and tailnet port share the last two digits; the leading
   It conflicts with `ds4-server.service` and `qwen-gpu01.service` on that node.
 - Logs: `journalctl -b -f _SYSTEMD_USER_UNIT=ds41-ep.service`. First start
   prefaults the 341 GiB model into RAM (several minutes before the port opens).
-- forsker-pc forwards the tailnet ports with `ssh-forward@1008{1,2,3}`, using the
-  dedicated passphrase-free key `~/.local/state/smil-forward/id_ed25519` whose
-  public key is restricted on the smil hosts to port-forwarding.
+- forsker-pc forwards the tailnet ports with the user units
+  `ssh-forward@10081`, `@10082`, `@10083` (enabled at boot). They use the
+  passphrase-free key `~/.local/state/smil-forward/id_ed25519`, whose public key
+  is installed on the smil hosts by `scripts/authorize-forward-key.sh` and
+  restricted to `port-forwarding` of the model ports only. The unit passes
+  `ControlMaster=no ControlPath=none`, so each unit owns its own ssh and systemd
+  restarts it (verified by killing one: active again after ~10 s). `permitopen`
+  values: ai-smil1 8601,8602; ai-smil2 8801.
+- The tailnet front door is the three forward ports only: funnel and the
+  `tailscale serve` proxy are removed (`tailscale serve status` = no config).
 - Stable V4 in `~/ds4` on both nodes is untouched.
 - pi: provider `smil` in `~/.pi/agent/models.json` (chezmoi, gated by
   `smil_models`) exposes the three models at `http://100.85.194.1:1008N/v1` and
