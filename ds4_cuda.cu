@@ -19,6 +19,9 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include "ds4_linux_memory.h"
 #include <unordered_map>
 #include <vector>
@@ -177,17 +180,22 @@ typedef struct {
     uint64_t prefill_capacity;
 } cuda_stream_selected_cache;
 
-static cuda_stream_selected_cache g_stream_selected_cache;
-static uint32_t g_stream_expert_budget;
-static uint64_t g_stream_expert_bytes;
+/* The expert cache, its upload ring and the scratch pool are per thread: the
+ * main thread owns the engine's cache; each expert-parallel helper thread
+ * (see "Expert-parallel decode") owns one on its own GPU. */
+static thread_local cuda_stream_selected_cache g_stream_selected_cache;
+static thread_local bool t_ep_helper;
+static thread_local uint64_t t_ep_reserve_bytes;
+static thread_local uint32_t g_stream_expert_budget;
+static thread_local uint64_t g_stream_expert_bytes;
 struct cuda_stream_expert_slot {
     uint64_t gate, up, down, used;
 };
-static std::vector<cuda_stream_expert_slot> g_stream_expert_slots;
-static std::unordered_map<uint64_t, uint32_t> g_stream_expert_by_gate;
+static thread_local std::vector<cuda_stream_expert_slot> g_stream_expert_slots;
+static thread_local std::unordered_map<uint64_t, uint32_t> g_stream_expert_by_gate;
 /* Zero is empty; one is an unread look-ahead entry, older than any demand hit. */
-static uint64_t g_stream_expert_clock = 1;
-static std::vector<int32_t> g_stream_prefill_ids, g_stream_prefill_slots;
+static thread_local uint64_t g_stream_expert_clock = 1;
+static thread_local std::vector<int32_t> g_stream_prefill_ids, g_stream_prefill_slots;
 extern "C" void ds4_gpu_stream_expert_cache_prefetch_finish(bool cancel);
 static void cuda_stream_prefetch_before_load(const ds4_gpu_stream_expert_table *table);
 static bool cuda_stream_prefetch_protects(const cuda_stream_expert_slot &slot);
@@ -531,8 +539,8 @@ static uint64_t g_model_load_progress_next;
 static double g_model_load_progress_last;
 static int g_model_load_progress_started;
 static int g_model_load_progress_tty;
-static void *g_cuda_tmp;
-static uint64_t g_cuda_tmp_bytes;
+static thread_local void *g_cuda_tmp;
+static thread_local uint64_t g_cuda_tmp_bytes;
 static void *g_tt_scratch;
 static uint64_t g_tt_scratch_bytes;
 static int g_tt_scratch_device = -1;
@@ -545,11 +553,11 @@ static void *g_model_stage_raw[4];
 static void *g_model_stage[4];
 static cudaEvent_t g_model_stage_event[4];
 static uint64_t g_model_stage_bytes;
-static void *g_stream_selected_stage_raw[4];
-static void *g_stream_selected_stage[4];
-static cudaEvent_t g_stream_selected_stage_event[4];
-static uint64_t g_stream_selected_stage_bytes;
-static cudaStream_t g_stream_selected_upload_stream;
+static thread_local void *g_stream_selected_stage_raw[4];
+static thread_local void *g_stream_selected_stage[4];
+static thread_local cudaEvent_t g_stream_selected_stage_event[4];
+static thread_local uint64_t g_stream_selected_stage_bytes;
+static thread_local cudaStream_t g_stream_selected_upload_stream;
 /* SSD streaming expert uploads DMA straight from the model mmap. */
 static int g_stream_pageable_dma;
 static int cuda_stream_selected_load_tensor(
@@ -680,7 +688,7 @@ static void *cuda_tmp_alloc(uint64_t bytes, const char *what) {
                      "synchronize CUDA scratch growth")) {
             return NULL;
         }
-        ds4_gpu_decode_graphs_invalidate();
+        if (!t_ep_helper) ds4_gpu_decode_graphs_invalidate();
         (void)cudaFree(g_cuda_tmp);
         g_cuda_tmp = NULL;
         g_cuda_tmp_bytes = 0;
@@ -1008,7 +1016,7 @@ static inline cublasHandle_t cuda_cublas_for_tier(int logical_tier) {
  *
  * DS4_CUDA_DECODE_GRAPHS=0 (or off/no/false) disables everything. */
 #define CUDA_DECODE_GRAPH_LAYERS   64u
-#define CUDA_DECODE_GRAPH_ISLANDS   5u
+#define CUDA_DECODE_GRAPH_ISLANDS   6u
 #define CUDA_DECODE_GRAPH_VARIANTS  4u
 
 /* Mirrors the public `struct ds4_decode_graph_key` decl in ds4_gpu.h
@@ -1041,6 +1049,9 @@ static cuda_decode_graph_entry
                    [CUDA_DECODE_GRAPH_VARIANTS];
 static cudaStream_t g_decode_graph_stream = NULL;
 static int g_decode_graph_capturing = 0;
+/* Stream the open capture runs on: the graph stream, or the V4.1 side stream
+ * for island 5 (the shared expert, which runs beside the routed experts). */
+static cudaStream_t g_decode_graph_cs = NULL;
 static uint64_t g_decode_graph_replays = 0;
 static uint64_t g_decode_graph_captures = 0;
 
@@ -1069,6 +1080,7 @@ extern "C" int ds4_gpu_decode_graphs_supported(void) {
  * eager mode (unchanged behavior); the capture stream while a capture
  * or replay is in flight. */
 static inline cudaStream_t cuda_decode_stream(void) {
+    if (t_ep_helper) return (cudaStream_t)0;
     if (g_dsv41_shared.active) return g_dsv41_shared.stream;
     return g_decode_graph_capturing ? g_decode_graph_stream : (cudaStream_t)0;
 }
@@ -1147,6 +1159,9 @@ static cuda_decode_graph_entry *cuda_decode_graph_find(
 extern "C" int ds4_gpu_decode_graph_begin(const ds4_decode_graph_key *key) {
     if (!key || !ds4_gpu_decode_graphs_supported()) return -1;
     if (g_decode_graph_capturing) return -1;   /* no nesting */
+    const bool aux = key->island == 5u;
+    /* Island 5 only runs inside an open side region, on that stream. */
+    if (aux && !g_dsv41_shared.active) return -1;
     cuda_decode_graph_entry *e = cuda_decode_graph_find(key);
     if (!e || e->state == 3) return -1;
     if (e->state == 0) {
@@ -1156,7 +1171,8 @@ extern "C" int ds4_gpu_decode_graph_begin(const ds4_decode_graph_key *key) {
         return -1;
     }
     if (e->state == 2) {
-        cudaError_t err = cudaGraphLaunch(e->exec, g_decode_graph_stream);
+        cudaError_t err = cudaGraphLaunch(e->exec,
+            aux ? g_dsv41_shared.stream : g_decode_graph_stream);
         if (err != cudaSuccess) {
             fprintf(stderr, "ds4: decode graph replay failed (il=%u island=%u): %s\n",
                     key->il, key->island, cudaGetErrorString(err));
@@ -1178,12 +1194,14 @@ extern "C" int ds4_gpu_decode_graph_begin(const ds4_decode_graph_key *key) {
         }
     }
     /* cuBLAS rides the legacy NULL stream, which cannot be captured:
-     * point the handle at the capture stream for the duration. */
-    (void)cublasSetStream(cuda_cublas_main_for_tier(0), g_decode_graph_stream);
-    if (!cuda_ok(cudaStreamBeginCapture(g_decode_graph_stream,
+     * point the handle at the capture stream for the duration. The side
+     * region already has its own handle on its own stream. */
+    g_decode_graph_cs = aux ? g_dsv41_shared.stream : g_decode_graph_stream;
+    if (!aux) (void)cublasSetStream(cuda_cublas_main_for_tier(0), g_decode_graph_stream);
+    if (!cuda_ok(cudaStreamBeginCapture(g_decode_graph_cs,
                                         cudaStreamCaptureModeGlobal),
                  "decode graph begin capture")) {
-        (void)cublasSetStream(cuda_cublas_main_for_tier(0), NULL);
+        if (!aux) (void)cublasSetStream(cuda_cublas_main_for_tier(0), NULL);
         cuda_decode_graph_entry_kill(e);
         return -1;
     }
@@ -1195,8 +1213,9 @@ extern "C" int ds4_gpu_decode_graph_end(const ds4_decode_graph_key *key) {
     if (!key || !g_decode_graph_capturing) return -1;
     g_decode_graph_capturing = 0;
     cudaGraph_t graph = NULL;
-    cudaError_t err = cudaStreamEndCapture(g_decode_graph_stream, &graph);
-    (void)cublasSetStream(cuda_cublas_main_for_tier(0), NULL);
+    cudaError_t err = cudaStreamEndCapture(g_decode_graph_cs, &graph);
+    if (g_decode_graph_cs == g_decode_graph_stream)
+        (void)cublasSetStream(cuda_cublas_main_for_tier(0), NULL);
     cuda_decode_graph_entry *e = cuda_decode_graph_find(key);
     if (err != cudaSuccess || graph == NULL) {
         fprintf(stderr, "ds4: decode graph capture failed (il=%u island=%u): %s\n",
@@ -1222,7 +1241,7 @@ extern "C" int ds4_gpu_decode_graph_end(const ds4_decode_graph_key *key) {
     }
     /* Capture recorded the work without executing it: launch now so this
      * token's island actually runs. */
-    err = cudaGraphLaunch(exec, g_decode_graph_stream);
+    err = cudaGraphLaunch(exec, g_decode_graph_cs);
     if (err != cudaSuccess) {
         fprintf(stderr, "ds4: decode graph first launch failed (il=%u island=%u): %s\n",
                 key->il, key->island, cudaGetErrorString(err));
@@ -1375,9 +1394,10 @@ extern "C" void ds4_gpu_decode_graph_abort(const ds4_decode_graph_key *key) {
     if (!g_decode_graph_capturing) return;
     g_decode_graph_capturing = 0;
     cudaGraph_t graph = NULL;
-    (void)cudaStreamEndCapture(g_decode_graph_stream, &graph);
+    (void)cudaStreamEndCapture(g_decode_graph_cs, &graph);
     if (graph) (void)cudaGraphDestroy(graph);
-    (void)cublasSetStream(cuda_cublas_main_for_tier(0), NULL);
+    if (g_decode_graph_cs == g_decode_graph_stream)
+        (void)cublasSetStream(cuda_cublas_main_for_tier(0), NULL);
     (void)cudaGetLastError();
     if (key) {
         cuda_decode_graph_entry *e = cuda_decode_graph_find(key);
@@ -4294,6 +4314,7 @@ extern "C" int ds4_gpu_register_model_map_no_copy(const void *model_map, uint64_
  * Added for multi-GPU placement scaffolding (multi-GPU CLI); first executed by
  * multi-GPU execution (follow-up). */
 extern "C" int ds4_gpu_set_current_device(int logical_tier) {
+    if (t_ep_helper) return 0;   /* helper threads stay on their own GPU */
     if (logical_tier < 0 || logical_tier >= g_n_gpus) return -1;
     if (!g_cuda_no_setdevice_cache && g_current_logical_tier == logical_tier) {
         return 0;
@@ -26880,9 +26901,10 @@ static int routed_moe_launch(
             (n_tokens == 1u || small_exact_batch) && (n_expert == 6u || n_expert == 3u) &&
             getenv("DS4_CUDA_MOE_NO_DIRECT_DOWN_SUM6") == NULL;
         const bool ordered_tp = owned_filtered && g_ssd_streaming_mode &&
-            g_network_tp_rank >= 0 && iq2_path && n_tokens == 1u && n_expert == 6u &&
-            expert_in_dim == 5120u && expert_mid_dim == 2304u &&
-            getenv("DS4_CUDA_V41_TP_ORDERED_SUM") != NULL;
+            (t_ep_helper || (g_network_tp_rank >= 0 &&
+                getenv("DS4_CUDA_V41_TP_ORDERED_SUM") != NULL)) &&
+            iq2_path && n_tokens == 1u && n_expert == 6u &&
+            expert_in_dim == 5120u && expert_mid_dim == 2304u;
         if (ordered_tp && !use_direct_down_sum) return 0;
         const uint32_t use_direct_midq =
             q4k_path && use_direct_down_sum && !write_gate_up &&
@@ -27790,7 +27812,9 @@ static int routed_moe_launch(
             }
             for (uint32_t i = 0; i < 7u; i++) (void)cudaEventDestroy(prof_ev[i]);
         }
-        if (ok && ordered_tp) {
+        /* An expert-parallel helper leaves the per-slot rows in `down`; the
+         * leader gathers and sums them in slot order. */
+        if (ok && ordered_tp && !t_ep_helper) {
             const uint64_t bytes = 6ull * out_dim * sizeof(float);
             if (!g_network_tp_expert_peer || g_network_tp_expert_peer->bytes < bytes) {
                 ds4_gpu_tensor_free(g_network_tp_expert_peer);
@@ -28368,6 +28392,269 @@ extern "C" int ds4_gpu_routed_moe_batch_owned_tensor(
             selected, weights, resident_expert_count, n_expert,
             clamp, x, layer_index, n_tokens, 0, 1);
 }
+
+/* ===== Expert-parallel decode =====
+ * DS4_V41_EP_GPUS=1,2,3: one-token routed experts run on helper GPUs, each
+ * with a large private expert cache (the helpers hold no dense weights or KV,
+ * so almost all of their memory is cache). Each helper owns a contiguous
+ * range of every layer's experts, computes its owned slots with the same
+ * kernels as the single-GPU path, and copies the per-slot rows back to the
+ * leader, which sums the six slots in slot order. The summation order, and so
+ * the result, is that of one GPU. Prefill and every other path are unchanged. */
+static void cuda_stream_stats_exit_thread(int dev);
+
+struct ep_job {
+    const void *model_map; uint64_t model_size, gate_offset, up_offset, down_offset;
+    uint32_t gate_type, down_type;
+    uint64_t gate_expert_bytes, gate_row_bytes, down_expert_bytes, down_row_bytes;
+    uint32_t in_dim, mid_dim, out_dim, n_total_expert, n_expert, layer;
+    float clamp;
+    const void *x, *sel, *w;
+    void *gather;
+};
+struct ep_helper {
+    int dev = 0;
+    uint32_t base = 0, count = 0;
+    std::thread th;
+    std::atomic<uint64_t> posted{0}, done{0};
+    std::atomic<int> fail{0};
+    std::mutex lock;
+    std::condition_variable wake;
+    std::atomic<bool> sleeping{false};
+    ep_job job;
+    cudaEvent_t finished = NULL;
+    ds4_gpu_tensor x = {}, sel = {}, w = {}, gate = {}, up = {}, mid = {}, down = {}, out = {};
+    uint64_t gate_cap = 0, down_cap = 0, x_cap = 0;
+    uint64_t jobs = 0;
+};
+static struct {
+    bool init = false, active = false, quit = false;
+    int leader = 0;
+    uint32_t slots = 0;
+    uint64_t reserve = 0;
+    std::vector<ep_helper *> helpers;
+    cudaEvent_t ready = NULL;
+    void *gather[8] = {};
+    uint64_t gather_bytes = 0;
+    std::atomic<uint64_t> seq{0};
+} g_ep;
+
+static bool ep_alloc(ds4_gpu_tensor *t, uint64_t bytes) {
+    void *p = NULL;
+    if (!cuda_ok(cudaMalloc(&p, (size_t)bytes), "expert-parallel buffer")) return false;
+    memset(t, 0, sizeof(*t));
+    t->ptr = p;
+    t->bytes = bytes;
+    t->owner = 1;
+    return true;
+}
+
+static void ep_free(ds4_gpu_tensor *t) {
+    if (t->ptr) (void)cudaFree(t->ptr);
+    memset(t, 0, sizeof(*t));
+}
+
+static void ep_helper_run(ep_helper *h) {
+    const ep_job &j = h->job;
+    const uint64_t pairs = j.n_expert;
+    if (h->x_cap < (uint64_t)j.in_dim * 4u || h->gate_cap < pairs * j.mid_dim * 4u ||
+        h->down_cap < pairs * j.out_dim * 4u) {
+        ep_free(&h->x); ep_free(&h->sel); ep_free(&h->w); ep_free(&h->gate);
+        ep_free(&h->up); ep_free(&h->mid); ep_free(&h->down); ep_free(&h->out);
+        h->x_cap = (uint64_t)j.in_dim * 4u;
+        h->gate_cap = pairs * j.mid_dim * 4u;
+        h->down_cap = pairs * j.out_dim * 4u;
+        if (!ep_alloc(&h->x, h->x_cap) || !ep_alloc(&h->sel, pairs * 4u) ||
+            !ep_alloc(&h->w, pairs * 4u) || !ep_alloc(&h->gate, h->gate_cap) ||
+            !ep_alloc(&h->up, h->gate_cap) || !ep_alloc(&h->mid, h->gate_cap) ||
+            !ep_alloc(&h->down, h->down_cap) || !ep_alloc(&h->out, (uint64_t)j.out_dim * 4u)) {
+            h->fail = 1;
+            return;
+        }
+    }
+    /* Everything runs on this device's default stream, in order. */
+    if (!cuda_ok(cudaStreamWaitEvent((cudaStream_t)0, g_ep.ready, 0), "expert-parallel ready") ||
+        !cuda_ok(cudaMemcpyPeerAsync(h->x.ptr, h->dev, j.x, g_ep.leader, (size_t)j.in_dim * 4u, 0),
+                 "expert-parallel x copy") ||
+        !cuda_ok(cudaMemcpyPeerAsync(h->sel.ptr, h->dev, j.sel, g_ep.leader, pairs * 4u, 0),
+                 "expert-parallel ids copy") ||
+        !cuda_ok(cudaMemcpyPeerAsync(h->w.ptr, h->dev, j.w, g_ep.leader, pairs * 4u, 0),
+                 "expert-parallel weights copy")) {
+        h->fail = 1;
+        return;
+    }
+    if (!ds4_gpu_routed_moe_batch_owned_tensor(&h->out, &h->gate, &h->up, &h->mid, &h->down,
+            j.model_map, j.model_size, j.gate_offset, j.up_offset, j.down_offset,
+            j.gate_type, j.down_type, j.gate_expert_bytes, j.gate_row_bytes,
+            j.down_expert_bytes, j.down_row_bytes, j.in_dim, j.mid_dim, j.out_dim,
+            &h->sel, &h->w, j.n_total_expert, j.n_expert, h->base, h->count, j.clamp,
+            &h->x, j.layer, 1, NULL) ||
+        !cuda_ok(cudaMemcpyPeerAsync(j.gather, g_ep.leader, h->down.ptr, h->dev,
+                                     pairs * j.out_dim * 4u, 0), "expert-parallel rows copy") ||
+        !cuda_ok(cudaEventRecord(h->finished, 0), "expert-parallel done")) {
+        h->fail = 1;
+        return;
+    }
+    h->jobs++;
+}
+
+static void ep_helper_main(ep_helper *h) {
+    t_ep_helper = true;
+    t_ep_reserve_bytes = g_ep.reserve;
+    g_stream_expert_budget = g_ep.slots;
+    g_stream_expert_bytes = 0;
+    if (!cuda_ok(cudaSetDevice(h->dev), "expert-parallel device") ||
+        !cuda_ok(cudaEventCreateWithFlags(&h->finished, cudaEventDisableTiming),
+                 "expert-parallel event")) {
+        h->fail = 1;
+    }
+    uint64_t seen = 0;
+    for (;;) {
+        /* Spin briefly (a token's layers arrive back to back), then sleep. */
+        uint64_t spins = 0;
+        while (h->posted.load(std::memory_order_acquire) == seen && !g_ep.quit) {
+            if (++spins > 200000) {
+                std::unique_lock<std::mutex> guard(h->lock);
+                h->sleeping.store(true);
+                h->wake.wait(guard, [&] {
+                    return h->posted.load(std::memory_order_acquire) != seen || g_ep.quit;
+                });
+                h->sleeping.store(false);
+            }
+        }
+        if (g_ep.quit) break;
+        seen = h->posted.load(std::memory_order_acquire);
+        if (!h->fail) ep_helper_run(h);
+        h->done.store(seen, std::memory_order_release);
+    }
+    cuda_stream_stats_exit_thread(h->dev);
+}
+
+static void ep_shutdown(void) {
+    if (!g_ep.init) return;
+    g_ep.quit = true;
+    for (auto *h : g_ep.helpers) {
+        { std::lock_guard<std::mutex> guard(h->lock); }
+        h->wake.notify_all();
+    }
+    for (auto *h : g_ep.helpers) if (h->th.joinable()) h->th.join();
+    g_ep.active = false;
+}
+
+extern "C" int ds4_gpu_ep_active(void) { return g_ep.active; }
+
+/* gpus: comma list of helper device ids; slots: expert cache slots per helper. */
+extern "C" int ds4_gpu_ep_init(const char *gpus, uint32_t slots, uint32_t reserve_mb) {
+    if (g_ep.init) return g_ep.active;
+    g_ep.init = true;
+    if (!gpus || !gpus[0] || !g_ssd_streaming_mode || g_n_gpus != 1 || !g_stream_pageable_dma) return 0;
+    int leader = 0;
+    if (cudaGetDevice(&leader) != cudaSuccess) return 0;
+    g_ep.leader = leader;
+    g_ep.slots = slots;
+    g_ep.reserve = (uint64_t)reserve_mb << 20;
+    char *list = strdup(gpus);
+    for (char *tok = strtok(list, ","); tok; tok = strtok(NULL, ",")) {
+        const int dev = atoi(tok);
+        int n = 0;
+        if (dev == leader || cudaGetDeviceCount(&n) != cudaSuccess || dev < 0 || dev >= n) continue;
+        auto *h = new ep_helper();
+        h->dev = dev;
+        g_ep.helpers.push_back(h);
+    }
+    free(list);
+    const uint32_t n = (uint32_t)g_ep.helpers.size();
+    if (!n || 384u % n) {
+        fprintf(stderr, "ds4: expert-parallel decode needs 1, 2, 3, 4 ... helpers dividing 384 (got %u)\n", n);
+        return 0;
+    }
+    for (uint32_t i = 0; i < n; i++) {
+        g_ep.helpers[i]->count = 384u / n;
+        g_ep.helpers[i]->base = i * (384u / n);
+        /* Peer access is best effort: without it the copies stage through the host. */
+        int can = 0;
+        (void)cudaDeviceCanAccessPeer(&can, g_ep.leader, g_ep.helpers[i]->dev);
+        if (can) { (void)cudaDeviceEnablePeerAccess(g_ep.helpers[i]->dev, 0); (void)cudaGetLastError(); }
+        (void)cudaSetDevice(g_ep.helpers[i]->dev);
+        can = 0;
+        (void)cudaDeviceCanAccessPeer(&can, g_ep.helpers[i]->dev, g_ep.leader);
+        if (can) { (void)cudaDeviceEnablePeerAccess(g_ep.leader, 0); (void)cudaGetLastError(); }
+        (void)cudaSetDevice(g_ep.leader);
+    }
+    if (!cuda_ok(cudaEventCreateWithFlags(&g_ep.ready, cudaEventDisableTiming), "expert-parallel ready event")) return 0;
+    for (auto *h : g_ep.helpers) h->th = std::thread(ep_helper_main, h);
+    atexit(ep_shutdown);
+    g_ep.active = true;
+    fprintf(stderr, "ds4: expert-parallel decode on %u helper GPU(s), %u cache slots each\n", n, slots);
+    return 1;
+}
+
+__global__ static void moe_sum_ep_kernel(
+        float *out, const float *r0, const float *r1, const float *r2, const float *r3,
+        const int32_t *selected, uint32_t width, uint32_t per_helper) {
+    const uint32_t row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= width) return;
+    float sum = 0.0f;
+    #pragma unroll
+    for (uint32_t slot = 0; slot < 6u; slot++) {
+        const int32_t e = selected[slot];
+        const uint32_t owner = e >= 0 ? (uint32_t)e / per_helper : 0u;
+        const float *src = owner == 0u ? r0 : owner == 1u ? r1 : owner == 2u ? r2 : r3;
+        sum = __fadd_rn(sum, src[(uint64_t)slot * width + row]);
+    }
+    out[row] = sum;
+}
+
+extern "C" int ds4_gpu_ep_routed_moe(ds4_gpu_tensor *out, const void *model_map, uint64_t model_size,
+        uint64_t gate_offset, uint64_t up_offset, uint64_t down_offset,
+        uint32_t gate_type, uint32_t down_type,
+        uint64_t gate_expert_bytes, uint64_t gate_row_bytes,
+        uint64_t down_expert_bytes, uint64_t down_row_bytes,
+        uint32_t expert_in_dim, uint32_t expert_mid_dim, uint32_t out_dim,
+        const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights,
+        uint32_t n_total_expert, uint32_t n_expert, float clamp,
+        const ds4_gpu_tensor *x, uint32_t layer_index) {
+    if (!g_ep.active || n_expert != 6u || g_ep.helpers.size() > 4u ||
+        gate_type != 16u || down_type != 10u || n_total_expert != 384u) return 0;
+    const uint64_t need = 6ull * out_dim * 4u;
+    if (g_ep.gather_bytes < need) {
+        for (auto &p : g_ep.gather) { if (p) (void)cudaFree(p); p = NULL; }
+        for (size_t i = 0; i < g_ep.helpers.size(); i++)
+            if (!cuda_ok(cudaMalloc(&g_ep.gather[i], (size_t)need), "expert-parallel gather")) return 0;
+        g_ep.gather_bytes = need;
+    }
+    if (!cuda_ok(cudaEventRecord(g_ep.ready, cuda_decode_stream()), "expert-parallel ready record")) return 0;
+    const uint64_t seq = ++g_ep.seq;
+    for (size_t i = 0; i < g_ep.helpers.size(); i++) {
+        ep_helper *h = g_ep.helpers[i];
+        ep_job &j = h->job;
+        j = {model_map, model_size, gate_offset, up_offset, down_offset, gate_type, down_type,
+             gate_expert_bytes, gate_row_bytes, down_expert_bytes, down_row_bytes,
+             expert_in_dim, expert_mid_dim, out_dim, n_total_expert, n_expert, layer_index, clamp,
+             x->ptr, selected->ptr, weights->ptr, g_ep.gather[i]};
+        h->posted.store(h->done.load() + 1, std::memory_order_seq_cst);
+        if (h->sleeping.load()) {
+            { std::lock_guard<std::mutex> guard(h->lock); }
+            h->wake.notify_one();
+        }
+    }
+    (void)seq;
+    for (ep_helper *h : g_ep.helpers) {
+        while (h->done.load(std::memory_order_acquire) != h->posted.load(std::memory_order_relaxed)) {
+            if (h->fail) return 0;
+        }
+        if (h->fail) return 0;
+        if (!cuda_ok(cudaStreamWaitEvent(cuda_decode_stream(), h->finished, 0), "expert-parallel wait")) return 0;
+    }
+    const float *r[4];
+    for (int i = 0; i < 4; i++)
+        r[i] = (const float *)g_ep.gather[i < (int)g_ep.helpers.size() ? i : 0];
+    moe_sum_ep_kernel<<<(out_dim + 255u) / 256u, 256, 0, cuda_decode_stream()>>>(
+        (float *)out->ptr, r[0], r[1], r[2], r[3], (const int32_t *)selected->ptr, out_dim,
+        384u / (uint32_t)g_ep.helpers.size());
+    return cuda_ok(cudaGetLastError(), "expert-parallel sum");
+}
+
 extern "C" int ds4_gpu_hc_split_sinkhorn_tensor(ds4_gpu_tensor *out, const ds4_gpu_tensor *mix, const void *model_map, uint64_t model_size, uint64_t scale_offset, uint64_t base_offset, uint32_t n_hc, uint32_t sinkhorn_iters, float eps) {
     if (!out || !mix || !model_map || n_hc != 4) return 0;
     const uint64_t mix_bytes = 24ull * sizeof(float);
@@ -29172,7 +29459,7 @@ static FILE *cuda_stream_trace_file(void) {
 static struct {
     uint64_t loads, hits, misses, bytes;
     double wait_sec, upload_sec;
-} g_stream_stats[2];
+} thread_local g_stream_stats[2];
 
 static void cuda_stream_stats_exit(void) {
     for (unsigned phase = 0; phase < 2; phase++) {
@@ -29187,6 +29474,12 @@ static void cuda_stream_stats_exit(void) {
                 (double)s.bytes / 1073741824.0, s.wait_sec, s.upload_sec,
                 s.upload_sec > 0 ? (double)s.bytes / s.upload_sec / 1.0e9 : 0.0);
     }
+}
+
+static void cuda_stream_stats_exit_thread(int dev) {
+    if (!getenv("DS4_CUDA_SSD_STREAM_STATS")) return;
+    fprintf(stderr, "ds4: expert-parallel helper GPU %d:\n", dev);
+    cuda_stream_stats_exit();
 }
 
 static bool cuda_stream_stats_enabled(void) {
@@ -29270,6 +29563,7 @@ static int cuda_stream_selected_cache_begin_load(
             uint64_t reserve = UINT64_C(8) << 30;
             const char *reserve_mb = getenv("DS4_CUDA_SSD_CACHE_RESERVE_MB");
             if (reserve_mb && reserve_mb[0]) reserve = strtoull(reserve_mb, NULL, 10) << 20;
+            if (t_ep_helper) reserve = t_ep_reserve_bytes;
             const uint64_t available = free_bytes > reserve ? free_bytes - reserve : 0;
             capacity = std::min(capacity, available / expert_bytes);
             if (capacity < unique.size()) {
@@ -35822,11 +36116,27 @@ extern "C" int ds4_gpu_tp_big_gate_encode(uint32_t layer, uint32_t rows,
         g_cuda_tp.staging_bytes = bytes;
     }
     void *peer = (char *)g_cuda_tp.staging + g_cuda_tp.staging_bytes;
-    const int ok = cuda_ok(cudaStreamSynchronize(cuda_decode_stream()), "TP bulk arrival") &&
-        ds4_gpu_tensor_read(out_t, 0, g_cuda_tp.staging, bytes) &&
-        g_cuda_tp.big(g_cuda_tp.ud, layer, ++g_cuda_tp.batch_seq,
-                      g_cuda_tp.staging, peer, bytes) &&
-        ds4_gpu_tensor_write(in_t, 0, peer, bytes);
+    /* DS4_CUDA_TP_GATE_STATS=1: where the time of the bulk exchange goes. */
+    static const bool stats = getenv("DS4_CUDA_TP_GATE_STATS") != NULL;
+    static struct { double sync, d2h, exch, h2d; uint64_t n; } acc;
+    if (stats && acc.n == 0) atexit([] {
+        fprintf(stderr, "ds4: TP bulk gate: %llu exchanges, per exchange: wait for local GPU %.1f us, "
+                "D2H %.1f us, peer exchange %.1f us, H2D %.1f us\n", (unsigned long long)acc.n,
+                acc.sync / acc.n * 1e6, acc.d2h / acc.n * 1e6, acc.exch / acc.n * 1e6, acc.h2d / acc.n * 1e6);
+    });
+    const double t0 = stats ? cuda_wall_sec() : 0.0;
+    int ok = cuda_ok(cudaStreamSynchronize(cuda_decode_stream()), "TP bulk arrival");
+    const double t1 = stats ? cuda_wall_sec() : 0.0;
+    ok = ok && ds4_gpu_tensor_read(out_t, 0, g_cuda_tp.staging, bytes);
+    const double t2 = stats ? cuda_wall_sec() : 0.0;
+    ok = ok && g_cuda_tp.big(g_cuda_tp.ud, layer, ++g_cuda_tp.batch_seq,
+                             g_cuda_tp.staging, peer, bytes);
+    const double t3 = stats ? cuda_wall_sec() : 0.0;
+    ok = ok && ds4_gpu_tensor_write(in_t, 0, peer, bytes);
+    if (stats) {
+        const double t4 = cuda_wall_sec();
+        acc.sync += t1 - t0; acc.d2h += t2 - t1; acc.exch += t3 - t2; acc.h2d += t4 - t3; acc.n++;
+    }
     if (!ok) g_cuda_tp.failed = true;
     return ok;
 }

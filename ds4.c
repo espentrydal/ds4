@@ -41643,8 +41643,14 @@ static bool ds41_stream_route(ds41_gpu_graph *g, const ds4_model *m,
         ds4_gpu_router_select_tensor(g->selected, g->route_weights, g->route_probs,
             m->map, m->size, l->ffn_exp_probs_b->abs_offset, 0, 0, 0,
             DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_EXPERT_WEIGHT_SCALE, 0, 0, true, false,
-            g->route_logits) &&
-        ds41_matmul(g->shared_gate, m, l->ffn_gate_shexp, g->norm, true) &&
+            g->route_logits);
+}
+
+/* The shared expert only needs the FFN norm, so it can run on the side stream
+ * while the routed experts are looked up and uploaded. */
+static bool ds41_stream_shared(ds41_gpu_graph *g, const ds4_model *m,
+                               const ds4_layer_weights *l) {
+    return ds41_matmul(g->shared_gate, m, l->ffn_gate_shexp, g->norm, true) &&
         ds41_matmul(g->shared_up, m, l->ffn_up_shexp, g->norm, true) &&
         ds4_gpu_swiglu_tensor(g->shared_mid, g->shared_gate, g->shared_up,
                               DS4_N_FF_EXP, DS4_SWIGLU_CLAMP_EXP, 1.0f) &&
@@ -41665,6 +41671,21 @@ static bool ds41_stream_routed(ds41_gpu_graph *g, const ds4_model *m,
             DS4_N_EMBD, DS4_N_FF_EXP, DS4_N_EMBD, g->selected, g->route_weights,
             DS4_N_EXPERT, DS4_N_EXPERT_USED, g->tp_rank * (DS4_N_EXPERT / 2u),
             DS4_N_EXPERT / 2u, DS4_SWIGLU_CLAMP_EXP, g->norm, il, 1, NULL);
+    static int ep = -1;
+    if (ep < 0) {
+        const char *gpus = getenv("DS4_V41_EP_GPUS");
+        const char *slots = getenv("DS4_V41_EP_SLOTS"), *reserve = getenv("DS4_V41_EP_RESERVE_MB");
+        ep = gpus && gpus[0] && g->tp_world == 1 &&
+            ds4_gpu_ep_init(gpus, slots ? (uint32_t)atoi(slots) : 1800u,
+                            reserve ? (uint32_t)atoi(reserve) : 2048u);
+    }
+    if (ep)
+        return ds4_gpu_ep_routed_moe(g->routed, m->map, m->size, l->ffn_gate_exps->abs_offset,
+            l->ffn_up_exps->abs_offset, l->ffn_down_exps->abs_offset,
+            l->ffn_gate_exps->type, l->ffn_down_exps->type,
+            gate_row * DS4_N_FF_EXP, gate_row, down_row * DS4_N_EMBD, down_row,
+            DS4_N_EMBD, DS4_N_FF_EXP, DS4_N_EMBD, g->selected, g->route_weights,
+            DS4_N_EXPERT, DS4_N_EXPERT_USED, DS4_SWIGLU_CLAMP_EXP, g->norm, il) != 0;
     return ds4_gpu_routed_moe_one_tensor(g->routed, g->gate, g->up, g->mid, g->experts,
             m->map, m->size, l->ffn_gate_exps->abs_offset, l->ffn_up_exps->abs_offset,
             l->ffn_down_exps->abs_offset, l->ffn_gate_exps->type, l->ffn_down_exps->type,
@@ -42057,6 +42078,7 @@ static bool ds41_decode_island(ds41_gpu_graph *g, const ds4_model *m,
             island == 2 ? ds41_attention_output(g, m, l) :
             island == 3 ? ds41_bf16(g->block, DS4_N_EMBD) &&
                 ds41_graph_after_attention(g, m, l) && ds41_stream_route(g, m, l) :
+            island == 5 ? ds41_stream_shared(g, m, l) :
             island == 4 ? ds41_moe_finish(g, il) && ds41_graph_after_moe(g) :
             ds41_graph_after_attention(g, m, l) && ds41_moe_partial(g, m, l, il, 0);
         if (state != 0) return ok;
@@ -42087,8 +42109,19 @@ static bool ds41_graph_decode_layer(ds41_gpu_graph *g, const ds4_model *m,
             ds41_attention(g, m, l, il, true) && ds41_decode_island(g, m, l, il, 2);
         g->tp_world = saved_world;
         g->tp_rank = saved_rank;
-        return dense && ds41_decode_island(g, m, l, il, 3) &&
-            ds41_stream_routed(g, m, l, il) && ds41_decode_island(g, m, l, il, 4);
+        if (!dense || !ds41_decode_island(g, m, l, il, 3)) return false;
+        /* Shared expert beside the routed one (side stream, own scratch). */
+        static int side_off = -1;
+        if (side_off < 0) side_off = getenv("DS4_V41_NO_SHARED_SIDE") != NULL;
+        const int side = side_off ? 0 : ds4_gpu_side_begin();
+        if (side < 0) return false;
+        const bool shared = ds41_decode_island(g, m, l, il, 5);
+        if (side) {
+            if (!ds4_gpu_side_end()) return false;
+        }
+        if (!shared || !ds41_stream_routed(g, m, l, il)) return false;
+        if (side && !ds4_gpu_side_join()) return false;
+        return ds41_decode_island(g, m, l, il, 4);
     }
     if (g->tp_world != 2 || g->streaming || g->quality || g->imatrix ||
         g->image_count || getenv("DS4_METAL_DISABLE_V41_TP_SHARED_OWNER") ||
