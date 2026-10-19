@@ -12,7 +12,7 @@ set -euo pipefail
 MODEL=${DS4_MODEL:-$HOME/ds4.1/gguf/DeepSeek-V4.1-Flash-Q2.gguf}
 BIN=${DS4_BIN:-$HOME/ds4.1/ds4-server}
 HOST=${DS4_HOST:-0.0.0.0}
-PORT=${DS4_PORT:-8082}
+PORT=${DS4_PORT:-8801}
 CTX=${DS4_CTX:-65536}
 KV_DIR=${DS4_KV_DIR:-$HOME/ds4.1-kv}
 KV_MB=${DS4_KV_MB:-16384}
