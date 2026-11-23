@@ -89,7 +89,7 @@ inherits these settings on restart.
 - Primary service: `qwen-gpu01.service` (GPUs 0,1), Qwen3.8-27B Q6_K_XL, MTP
 - Optional second service: `qwen-gpu23.service` (GPUs 2,3), Qwen3.6-35B-A3B Q8
 - Scripts: `~/scripts/server-qwen-gpu01.sh`, `~/scripts/server-qwen-gpu23.sh`
-  (sources of truth in this repo: `scripts/hosts/ai-smil1-qwen-*.sh`)
+  (host launchers are kept outside this public repository)
 - Node ports: `8601`, `8602`; tailnet ports on <gateway-host>: `10081`, `10082`
 - Context: `262144`
 
