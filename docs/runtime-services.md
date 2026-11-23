@@ -5,7 +5,13 @@ development, one-off overrides, and customized launches.
 
 ## Production Defaults
 
-### DS4
+### DS4 stable V4 (retired 2026-11-23)
+
+Retired by the owner on 2026-11-23. `ds4-server.service` and
+`ds4-chat.service` are in `~/.config/systemd/user/deprecated/` on the nodes,
+and <gateway-host>'s forward `<forward-unit>@6844` is disabled. The settings below
+are kept as history. The current DeepSeek service is V4.1 Flash,
+`ds41-ep.service` on ai-smil2, host port `8801`, tailnet port `10083`.
 
 - Node: `ai-smil2`
 - Service: `ds4-server.service`
@@ -22,8 +28,8 @@ development, one-off overrides, and customized launches.
 - HC/FFN/shared scratch: `DS4_CUDA_LOCAL_HC_FFN_SCRATCH=1`
 - Decode-speed override: `DS4_METAL_DISABLE_SHARED_DOWN_HC_FUSION=1`
 
-The DS4 context default is intentionally 128K. This is the stable V4
-deployment and keeps port `8080`; the V4.1 Flash fleet uses the slot scheme,
+The DS4 context default was 128K. This was the stable V4 deployment on port
+`8080`, outside the slot scheme; the V4.1 Flash fleet uses the slot scheme,
 host `8801` / tailnet `10083` (`scripts/server-ds41-flash-v100-ep.sh`).
 
 DS4 decode speed is sensitive to VRAM pressure because larger context buffers
@@ -87,10 +93,16 @@ inherits these settings on restart.
 - Node ports: `8601`, `8602`; tailnet ports on <gateway-host>: `10081`, `10082`
 - Context: `262144`
 
-The port number carries the slot: `86NN` on ai-smil1, `88NN` on ai-smil2, and
-`100NN` on the tailnet, where `NN` is the service number (`81`-`89` are model
-slots; `80` and `88` stay free). Qwen 3.8 has no 35B-A3B variant, so the second
-slot stays on 3.6.
+The port number carries the service number `S` (`01`-`09`): host port `86S` on
+ai-smil1 and `88S` on ai-smil2 (the node's last address octet, then `S`), and
+tailnet port `10080 + S` on <gateway-host>. Service 01 is `8601` / `10081`, service
+03 is `8801` / `10083`. Tailnet ports `10080` and `10088` stay free, so service
+08 is not used. Qwen 3.8 has no 35B-A3B variant, so the second slot stays on
+3.6.
+
+Older forwards on <gateway-host> used `66SS`/`68SS` (old node octets `.66`/`.68`,
+`SS` = `01` GPUs 0,1, `23` GPUs 2,3, `44` ds4, `55` Whisper). They are
+deprecated; see `~/.config/<forward-unit>s/*.env` on <gateway-host>.
 
 Qwen uses 256K context by default because it has enough speed headroom for
 convenience. The older comments that called this "1M ctx" were stale; the actual
